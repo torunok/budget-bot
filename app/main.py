@@ -65,8 +65,8 @@ async def health_check(request: web.Request) -> web.Response:
 def create_app() -> web.Application:
     """Створення aiohttp додатку"""
     
-    # 🔥 КРИТИЧНИЙ ЕТАП: РЕЄСТРАЦІЯ ХЕНДЛЕРІВ! 🔥
-    register_all_handlers(dp)
+    # 🔥 ВИПРАВЛЕНО 🔥: Передаємо 'logger' як другий аргумент, відповідно до змін у __init__.py
+    register_all_handlers(dp, logger)
     logger.info("✅ All handlers successfully registered in Dispatcher.")
     
     app = web.Application()
@@ -105,7 +105,6 @@ def main():
             app,
             host=config.WEB_SERVER_HOST,
             port=config.WEB_SERVER_PORT,
-            # ВИПРАВЛЕНО: Рядок, де був невидимий символ U+00A0
             print=None  # Вимкнути стандартний вивід aiohttp
         )
     except Exception as e:
