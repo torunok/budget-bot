@@ -11,6 +11,8 @@ from typing import List, Dict, Optional, Tuple
 import gspread
 from gspread.exceptions import WorksheetNotFound, APIError
 
+import json
+
 from app.config.settings import config
 
 logger = logging.getLogger(__name__)
@@ -21,11 +23,25 @@ class SheetsService:
     
     def __init__(self):
         try:
-            self.gc = gspread.service_account(filename=str(config.GSHEETS_SERVICE_ACCOUNT_FILE))
+            # >>> ЗМІНА: АУТЕНТИФІКАЦІЯ ЧЕРЕЗ СЛОВНИК
+            # 1. Парсимо JSON-рядок, отриманий зі змінної оточення
+            creds_json = config.GOOGLE_SERVICE_ACCOUNT_JSON
+            
+            if not creds_json:
+                raise ValueError("GOOGLE_SERVICE_ACCOUNT_JSON is not set or empty.")
+            
+            creds_dict = json.loads(creds_json)
+            
+            # 2. Аутентифікація через словник
+            self.gc = gspread.service_account_from_dict(creds_dict) 
+            
             self.spreadsheet = self.gc.open_by_key(config.SPREADSHEET_ID)
             logger.info("✅ Connected to Google Sheets")
+            
         except Exception as e:
             logger.error(f"Failed to connect to Google Sheets: {e}")
+            # >>> Додаткова інформація про помилку аутентифікації
+            logger.error("Ensure GOOGLE_SERVICE_ACCOUNT_JSON and SPREADSHEET_ID are correctly set in Render environment.")
             raise
     
     def get_or_create_worksheet(self, nickname: str):

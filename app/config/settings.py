@@ -55,7 +55,8 @@ class Config:
     
     # Google Sheets
     SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-    GSHEETS_SERVICE_ACCOUNT_FILE = BASE_DIR / "service_account.json"
+    # >>> ЗМІНА 1: Нова змінна для вмісту JSON-файлу
+    GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
     
     # AI сервіси
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -97,7 +98,8 @@ class Config:
             "BOT_TOKEN",
             "WEBHOOK_SECRET_TOKEN",
             "SPREADSHEET_ID",
-            "BASE_WEBHOOK_URL"
+            "BASE_WEBHOOK_URL",
+            "GOOGLE_SERVICE_ACCOUNT_JSON" # >>> ЗМІНА 3: Додаємо перевірку на нову змінну
         ]
         
         missing = []
@@ -107,11 +109,6 @@ class Config:
         
         if missing:
             logger.error(f"Missing required environment variables: {', '.join(missing)}")
-            sys.exit(1)
-        
-        # Перевірка існування service account файлу
-        if not self.GSHEETS_SERVICE_ACCOUNT_FILE.exists():
-            logger.error(f"Service account file not found: {self.GSHEETS_SERVICE_ACCOUNT_FILE}")
             sys.exit(1)
         
         logger.info("Configuration validated successfully")
@@ -148,7 +145,7 @@ if config.SENTRY_DSN:
             environment=config.SENTRY_ENVIRONMENT,
             traces_sample_rate=0.1,
         )
-        logger.info("✅ Sentry initialized")
+        logger.info("Sentry initialized successfully")
     except ImportError:
         logger.warning("Sentry SDK not installed, skipping initialization")
 
