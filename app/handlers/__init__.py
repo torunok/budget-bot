@@ -15,7 +15,13 @@ from .support import router as support_router
 from .ai_analysis import router as ai_analysis_router
 
 
-def register_all_handlers(dp: Dispatcher):
+from .start import router as start_router
+from .transactions import router as transactions_router
+
+def register_all_handlers(dp):
+    all_routers = [start_router, transactions_router, ...]
+    for router in all_routers:
+        dp.include_router(router)
     """Реєструє всі хендлери в диспетчері"""
     
     # Створюємо список роутерів (порядок важливий!)

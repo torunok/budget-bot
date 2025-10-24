@@ -259,6 +259,3 @@ async def view_subscriptions(callback: CallbackQuery):
         await callback.answer("❌ Помилка", show_alert=True)
 
 
-def register_handlers(router_main):
-    """Реєструє хендлери підписок"""
-    router_main.include_router(router)

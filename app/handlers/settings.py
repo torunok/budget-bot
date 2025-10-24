@@ -186,6 +186,3 @@ async def back_to_settings(callback: CallbackQuery):
     await callback.answer()
 
 
-def register_handlers(router_main):
-    """Реєструє хендлери налаштувань"""
-    router_main.include_router(router)

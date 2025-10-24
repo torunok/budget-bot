@@ -96,7 +96,3 @@ async def show_period_statistics(callback: CallbackQuery):
         logger.error(f"Error showing period statistics: {e}", exc_info=True)
         await callback.answer("❌ Помилка", show_alert=True)
 
-
-def register_handlers(router_main):
-    """Реєструє хендлери статистики"""
-    router_main.include_router(router)

@@ -72,6 +72,3 @@ async def process_feedback(message: Message, state: FSMContext):
         )
 
 
-def register_handlers(router_main):
-    """Реєструє хендлери підтримки"""
-    router_main.include_router(router)

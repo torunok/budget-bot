@@ -103,8 +103,6 @@ async def process_transaction(message: Message, state: FSMContext):
         await message.reply("❌ Помилка при додаванні транзакції. Спробуй ще раз.")
 
 
-def register_handlers(router_main):
-    """Реєструє хендлери транзакцій"""
-    router_main.include_router(router)
+
 
 

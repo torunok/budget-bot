@@ -58,8 +58,3 @@ async def ai_analysis_handler(message: Message):
             "❌ На жаль, виникла помилка при аналізі.\n"
             "Спробуй пізніше або звернися в підтримку."
         )
-
-
-def register_handlers(router_main):
-    """Реєструє хендлери AI-аналізу"""
-    router_main.include_router(router)
