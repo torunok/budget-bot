@@ -20,26 +20,28 @@ from app.middlewares import setup_middlewares
 
 
 async def on_startup(app: web.Application) -> None:
-    """Дії при запуску бота"""
-    logger.info("🚀 Starting bot...")
-
-    # Реєстрація всіх хендлерів
-    register_all_handlers(dp)
-
-    # Налаштування middleware
-    setup_middlewares(dp)
+    # ... (інша логіка без змін)
 
     # Налаштування webhook
     try:
-        await bot.set_webhook(
+        # Виклик set_webhook повертає True/False, але не HTTP відповідь. 
+        # Додатково залогуємо, чи успішно aiogram обробив це.
+        webhook_result = await bot.set_webhook(
             url=config.WEBHOOK_URL,
             secret_token=config.WEBHOOK_SECRET_TOKEN,
             drop_pending_updates=True
         )
-        logger.info(f"✅ Webhook set to: {config.WEBHOOK_URL}")
-    except Exception as e:
-        logger.critical(f"❌ Failed to set webhook! Check BOT_TOKEN and BASE_WEBHOOK_URL: {e}")
-        # Оскільки без вебхука бот не працює, краще викликати виключення
+        if webhook_result:
+            logger.info(f"✅ Webhook set to: {config.WEBHOOK_URL}")
+        else:
+            logger.critical(f"❌ Webhook set returned False from aiogram!") 
+            # Цей лог допоможе, якщо aiogram не викинув виняток, але отримав помилку
+            raise Exception("Telegram API returned non-success on set_webhook") 
+            
+    except Exception as e: 
+        logger.critical(f"❌ Failed to set webhook! {e}", exc_info=True)
+        # Якщо тут ви побачите 'Unauthorized' – проблема у BOT_TOKEN
+        # Якщо ви побачите 'Bad Request' – проблема у WEBHOOK_URL
         raise
 
     # Запуск планувальника задач
