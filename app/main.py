@@ -122,6 +122,7 @@ async def on_startup(app: web.Application) -> None:
         
         if webhook_result:
             logger.info(f"✅ Webhook set successfully!")
+            logger.info(f"Secret token being used: {config.WEBHOOK_SECRET_TOKEN}")
             
             # Перевірка
             webhook_info = await bot.get_webhook_info()
