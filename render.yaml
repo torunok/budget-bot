@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: budget-telegram-bot
+    env: python
+    region: frankfurt
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m app.main
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: PORT
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
+      - key: WEBHOOK_SECRET_TOKEN
+        sync: false
+      - key: BASE_WEBHOOK_URL
+        sync: false
+      - key: SPREADSHEET_ID
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+    healthCheckPath: /health
