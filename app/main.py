@@ -60,6 +60,12 @@ async def webhook_handler(request: web.Request) -> web.Response:
     logger.info(f"   Method: {request.method}")
     logger.info(f"   Path: {request.path}")
     logger.info(f"   Headers: {dict(request.headers)}")
+    try:
+        body = await request.json()
+        logger.info(f"📦 Webhook body: {body}")
+    except Exception as e:
+        logger.error(f"❌ Failed to parse webhook body: {e}")
+        return web.Response(status=400, text="Invalid JSON")
     
     # Перевірка secret token
     secret_token = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
@@ -151,15 +157,13 @@ async def on_startup(app: web.Application) -> None:
 
 
 async def on_shutdown(app: web.Application) -> None:
-    """Дії при зупинці бота"""
-    logger.info("⏹️  Shutting down bot...")
-    
-    if 'scheduler' in app:
-        app['scheduler'].shutdown()
-    
-    await bot.delete_webhook(drop_pending_updates=True)
+    logger.info("⏹️ Shutting down bot...")
+    webhook_info = await bot.get_webhook_info()
+    logger.info(f"📋 Current webhook URL before shutdown: {webhook_info.url}")
+    if webhook_info.url:
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("🗑️ Webhook deleted")
     await bot.session.close()
-    
     logger.info("✅ Bot shutdown complete")
 
 

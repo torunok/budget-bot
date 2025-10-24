@@ -41,13 +41,13 @@ class Config:
     
     # Telegram Bot
     BOT_TOKEN = os.getenv("BOT_TOKEN")
-    WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN")
+    WEBHOOK_SECRET_TOKEN = os.getenv("WEBHOOK_SECRET_TOKEN", "my_secure_token_123")
     
     # Webhook налаштування
     WEB_SERVER_HOST = "0.0.0.0"
     WEB_SERVER_PORT = int(os.getenv("PORT", 8080))
     WEBHOOK_PATH = "/webhook"
-    BASE_WEBHOOK_URL = os.getenv("BASE_WEBHOOK_URL")
+    BASE_WEBHOOK_URL = os.getenv("BASE_WEBHOOK_URL", "https://budget-telegram-bot-jfuh.onrender.com")
     
     @property
     def WEBHOOK_URL(self):
