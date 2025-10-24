@@ -23,7 +23,7 @@ class AIService:
         if config.GEMINI_API_KEY and config.ENABLE_AI_ANALYSIS:
             try:
                 genai.configure(api_key=config.GEMINI_API_KEY)
-                self.model = genai.GenerativeModel("gemini-1.5-pro-latest")
+                self.model = genai.GenerativeModel("gemini-2.5-flash")
                 self.enabled = True
                 logger.info("✅ Gemini AI initialized")
             except Exception as e:
