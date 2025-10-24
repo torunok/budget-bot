@@ -22,21 +22,26 @@ from app.middlewares import setup_middlewares
 async def on_startup(app: web.Application) -> None:
     """Дії при запуску бота"""
     logger.info("🚀 Starting bot...")
-    
+
     # Реєстрація всіх хендлерів
     register_all_handlers(dp)
-    
+
     # Налаштування middleware
     setup_middlewares(dp)
-    
+
     # Налаштування webhook
-    await bot.set_webhook(
-        url=config.WEBHOOK_URL,
-        secret_token=config.WEBHOOK_SECRET_TOKEN,
-        drop_pending_updates=True
-    )
-    logger.info(f"✅ Webhook set to: {config.WEBHOOK_URL}")
-    
+    try:
+        await bot.set_webhook(
+            url=config.WEBHOOK_URL,
+            secret_token=config.WEBHOOK_SECRET_TOKEN,
+            drop_pending_updates=True
+        )
+        logger.info(f"✅ Webhook set to: {config.WEBHOOK_URL}")
+    except Exception as e:
+        logger.critical(f"❌ Failed to set webhook! Check BOT_TOKEN and BASE_WEBHOOK_URL: {e}")
+        # Оскільки без вебхука бот не працює, краще викликати виключення
+        raise
+
     # Запуск планувальника задач
     scheduler = setup_scheduler(bot)
     app['scheduler'] = scheduler
