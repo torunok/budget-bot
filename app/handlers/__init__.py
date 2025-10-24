@@ -1,12 +1,10 @@
-# ============================================
-# FILE: app/handlers/__init__.py
-# ============================================
 """
 Реєстрація всіх хендлерів
 """
 
 from aiogram import Dispatcher
-from .start import router as start_router # Імпортуємо роутер з start.py
+# Імпортуємо роутери
+from .start import router as start_router 
 from .transactions import router as transactions_router 
 from .statistics import router as statistics_router
 from .subscriptions import router as subscriptions_router
@@ -15,18 +13,12 @@ from .support import router as support_router
 from .ai_analysis import router as ai_analysis_router
 
 
-from .start import router as start_router
-from .transactions import router as transactions_router
-
-def register_all_handlers(dp):
-    all_routers = [start_router, transactions_router, ...]
-    for router in all_routers:
-        dp.include_router(router)
-    """Реєструє всі хендлери в диспетчері"""
+def register_all_handlers(dp: Dispatcher):
+    """Реєструє всі роутери у головному диспетчері."""
     
     # Створюємо список роутерів (порядок важливий!)
     all_routers = [
-        # Більш специфічні роутери (наприклад, для команд або певних станів) - спочатку
+        # Більш специфічні роутери - спочатку
         start_router,
         transactions_router,
         statistics_router,
@@ -34,13 +26,13 @@ def register_all_handlers(dp):
         ai_analysis_router,
         settings_router,
         support_router,
-        # Загальні обробники тексту мають бути в кінці (якщо є)
+        # Загальні обробники тексту мають бути в кінці
     ]
 
     # Включаємо кожен роутер у диспетчер
     for router in all_routers:
-        # aiogram 3.x вимагає, щоб до диспетчера додавалися роутери (або головний роутер)
         dp.include_router(router)
-        print(f"✅ Router included: {router.name}") # Логуємо для перевірки
+        # Використовуємо dp.logger для стандартного логування aiogram, а не print
+        dp.logger.info(f"✅ Router included: {router.name}") 
         
-    print(f"✅ Всі {len(all_routers)} роутерів успішно зареєстровані в диспетчері.")
+    dp.logger.info(f"✅ Всі {len(all_routers)} роутерів успішно зареєстровані в диспетчері.")

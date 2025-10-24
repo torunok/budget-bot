@@ -1,6 +1,3 @@
-# ============================================
-# FILE: app/main.py
-# ============================================
 """
 Точка входу додатку
 Налаштування webhook та запуск бота
@@ -13,19 +10,17 @@ from aiogram import Bot, Dispatcher
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
 from app.config.settings import config, logger
-from app.core.bot import dp, bot
+from app.core.bot import dp, bot # Припускається, що dp та bot тут вже ініціалізовані
 from app.handlers import register_all_handlers
 from app.scheduler.tasks import setup_scheduler
-from app.middlewares import setup_middlewares
+from app.middlewares import setup_middlewares # Припускається, що ви його використовуєте
 
 
 async def on_startup(app: web.Application) -> None:
-    # ... (інша логіка без змін)
+    """Дії при запуску бота: встановлення Webhook та запуск планувальника"""
 
     # Налаштування webhook
     try:
-        # Виклик set_webhook повертає True/False, але не HTTP відповідь. 
-        # Додатково залогуємо, чи успішно aiogram обробив це.
         webhook_result = await bot.set_webhook(
             url=config.WEBHOOK_URL,
             secret_token=config.WEBHOOK_SECRET_TOKEN,
@@ -35,13 +30,10 @@ async def on_startup(app: web.Application) -> None:
             logger.info(f"✅ Webhook set to: {config.WEBHOOK_URL}")
         else:
             logger.critical(f"❌ Webhook set returned False from aiogram!") 
-            # Цей лог допоможе, якщо aiogram не викинув виняток, але отримав помилку
             raise Exception("Telegram API returned non-success on set_webhook") 
             
     except Exception as e: 
         logger.critical(f"❌ Failed to set webhook! {e}", exc_info=True)
-        # Якщо тут ви побачите 'Unauthorized' – проблема у BOT_TOKEN
-        # Якщо ви побачите 'Bad Request' – проблема у WEBHOOK_URL
         raise
 
     # Запуск планувальника задач
@@ -72,6 +64,13 @@ async def health_check(request: web.Request) -> web.Response:
 
 def create_app() -> web.Application:
     """Створення aiohttp додатку"""
+    
+    # 🔥 КРИТИЧНИЙ ЕТАП: РЕЄСТРАЦІЯ ХЕНДЛЕРІВ! 🔥
+    # Роутери повинні бути включені в Dispatcher (dp) ПЕРЕД тим, як 
+    # він буде переданий до SimpleRequestHandler.
+    register_all_handlers(dp)
+    logger.info("✅ All handlers successfully registered in Dispatcher.")
+    
     app = web.Application()
     
     # Webhook handler
@@ -80,9 +79,10 @@ def create_app() -> web.Application:
         bot=bot,
         secret_token=config.WEBHOOK_SECRET_TOKEN,
     )
-    webhook_handler.register(app, path=config.WEBHOOK_PATH)
+    # WEBHOOK_PATH повинен відповідати шляху, який ви використовуєте у WEBHOOK_URL
+    webhook_handler.register(app, path=config.WEBHOOK_PATH) 
     
-    # Health check endpoint
+    # Health check endpoints
     app.router.add_get("/health", health_check)
     app.router.add_get("/", health_check)
     
@@ -107,7 +107,7 @@ def main():
             app,
             host=config.WEB_SERVER_HOST,
             port=config.WEB_SERVER_PORT,
-            print=None  # Вимкнути стандартний вивід aiohttp
+            print=None  # Вимкнути стандартний вивід aiohttp
         )
     except Exception as e:
         logger.critical(f"❌ Failed to start bot: {e}", exc_info=True)
