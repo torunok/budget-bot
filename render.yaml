@@ -11,6 +11,7 @@ services:
         value: 3.11.0
       - key: PORT
         sync: false
+        generateValue: true
       - key: BOT_TOKEN
         sync: false
       - key: WEBHOOK_SECRET_TOKEN

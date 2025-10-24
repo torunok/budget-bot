@@ -158,12 +158,13 @@ async def on_startup(app: web.Application) -> None:
 
 async def on_shutdown(app: web.Application) -> None:
     logger.info("⏹️ Shutting down bot...")
-    webhook_info = await bot.get_webhook_info()
-    logger.info(f"📋 Current webhook URL before shutdown: {webhook_info.url}")
-    if webhook_info.url:
-        await bot.delete_webhook(drop_pending_updates=True)
-        logger.info("🗑️ Webhook deleted")
+    if 'scheduler' in app:
+        app['scheduler'].shutdown()
+        logger.info("✅ Scheduler shutdown")
     await bot.session.close()
+    logger.info("✅ Bot session closed")
+    # Не видаляємо вебхук, щоб уникнути втрати після перезапуску
+    # await bot.delete_webhook(drop_pending_updates=True)
     logger.info("✅ Bot shutdown complete")
 
 
