@@ -1,24 +1,28 @@
 #File: app/handlers/start.py
 
 """
-Обробник команди /start
+Обробник команди /start.
+Включає роутер для команд /start та /help.
 """
 
 import logging
-from aiogram import Router, F
+from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from app.keyboards.reply import get_main_menu_keyboard
+# Імпортуємо клавіатуру (припускаємо, що вона існує)
+from app.keyboards.reply import get_main_menu_keyboard 
 
 logger = logging.getLogger(__name__)
-router = Router()
+# Експортуємо роутер, який буде включено в __init__.py
+router = Router() 
 
 
 @router.message(Command("start"))
 async def cmd_start(message: Message):
     """Обробник команди /start"""
-    logger.info(f"User @{message.from_user.username} started the bot")
+    # Додаємо логування, щоб побачити, що хендлер спрацював
+    logger.info(f"✅ User @{message.from_user.username} successfully started the bot") 
     
     welcome_text = (
         "👋 <b>Вітаю у фінансовому помічнику!</b>\n\n"
@@ -69,7 +73,5 @@ async def cmd_help(message: Message):
     
     await message.answer(help_text)
 
-
-def register_handlers(router_main):
-    """Реєструє хендлери"""
-    router_main.include_router(router)
+# *** Функція register_handlers ВИДАЛЕНА ***
+# Тепер головний __init__.py імпортує змінну router напряму.
