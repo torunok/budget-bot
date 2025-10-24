@@ -66,8 +66,6 @@ def create_app() -> web.Application:
     """Створення aiohttp додатку"""
     
     # 🔥 КРИТИЧНИЙ ЕТАП: РЕЄСТРАЦІЯ ХЕНДЛЕРІВ! 🔥
-    # Роутери повинні бути включені в Dispatcher (dp) ПЕРЕД тим, як 
-    # він буде переданий до SimpleRequestHandler.
     register_all_handlers(dp)
     logger.info("✅ All handlers successfully registered in Dispatcher.")
     
@@ -107,7 +105,8 @@ def main():
             app,
             host=config.WEB_SERVER_HOST,
             port=config.WEB_SERVER_PORT,
-            print=None  # Вимкнути стандартний вивід aiohttp
+            # ВИПРАВЛЕНО: Рядок, де був невидимий символ U+00A0
+            print=None  # Вимкнути стандартний вивід aiohttp
         )
     except Exception as e:
         logger.critical(f"❌ Failed to start bot: {e}", exc_info=True)
