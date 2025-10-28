@@ -10,7 +10,6 @@ services:
       - key: PYTHON_VERSION
         value: 3.10.12
       - key: PORT
-        sync: false
         generateValue: true
       - key: BOT_TOKEN
         sync: false
