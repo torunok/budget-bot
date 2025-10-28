@@ -1,3 +1,5 @@
+# File: setup_webhook.py
+
 """
 Скрипт для встановлення та перевірки webhook
 Запустіть: python setup_webhook.py

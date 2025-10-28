@@ -1,24 +1,48 @@
+# ============================================
+# Dockerfile
+# ============================================
+
+# Python 3.11 slim image
 FROM python:3.11-slim
 
+# Metadata
+LABEL maintainer="your_email@example.com"
+LABEL description="Budget Telegram Bot"
+
+# Set working directory
 WORKDIR /app
 
-# Встановлюємо залежності системи
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
+    g++ \
+    libpq-dev \
+    fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
-# Копіюємо requirements
+# Copy requirements first (для кешування шарів)
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
-# Копіюємо код
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
 COPY . .
 
-# Створюємо папку для логів
+# Create logs directory
 RUN mkdir -p logs
 
-# Порт
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Expose port (Render встановить свій)
 EXPOSE 8080
 
-# Запуск
-CMD ["python", "-m", "app.main"]
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:8080/health')"
+
+# Run application
+CMD ["python", "main.py"]

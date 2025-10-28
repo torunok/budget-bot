@@ -190,6 +190,294 @@ class SheetsService:
         user_ids = ws.col_values(1)[1:]  # Skip header
         return [int(uid) for uid in user_ids if uid]
 
+    def get_goals_worksheet(self):
+    """Отримує або створює аркуш цілей"""
+    worksheet_title = "user_goals"
+    try:
+        return self.spreadsheet.worksheet(worksheet_title)
+    except WorksheetNotFound:
+        ws = self.spreadsheet.add_worksheet(title=worksheet_title, rows=1000, cols=7)
+        ws.append_row([
+            "nickname", "goal_name", "target_amount", 
+            "current_amount", "deadline", "completed", "created_date"
+        ])
+        return ws
+
+
+def get_goals(self, nickname: str) -> List[Dict]:
+    """Отримує всі цілі користувача"""
+    ws = self.get_goals_worksheet()
+    all_goals = ws.get_all_records()
+    return [g for g in all_goals if g.get('nickname') == nickname]
+
+
+def add_goal(
+    self, 
+    nickname: str, 
+    goal_name: str, 
+    target_amount: float,
+    deadline: Optional[str] = None,
+    current_amount: float = 0
+):
+    """Додає нову ціль"""
+    ws = self.get_goals_worksheet()
+    created_date = datetime.now().strftime("%Y-%m-%d")
+    
+    row = [
+        nickname,
+        goal_name,
+        target_amount,
+        current_amount,
+        deadline or "Без дедлайну",
+        False,
+        created_date
+    ]
+    
+    ws.append_row(row)
+    logger.info(f"Goal added: {goal_name} for {nickname}")
+
+
+def update_goal_progress(
+    self,
+    nickname: str,
+    goal_name: str,
+    new_amount: float,
+    completed: bool = False
+):
+    """Оновлює прогрес цілі"""
+    ws = self.get_goals_worksheet()
+    
+    try:
+        # Знаходимо ціль
+        cell = ws.find(goal_name)
+        if not cell:
+            raise ValueError(f"Goal {goal_name} not found")
+        
+        row_index = cell.row
+        
+        # Оновлюємо current_amount (колонка 4)
+        ws.update_cell(row_index, 4, new_amount)
+        
+        # Оновлюємо completed (колонка 6)
+        ws.update_cell(row_index, 6, completed)
+        
+        logger.info(f"Goal progress updated: {goal_name} - {new_amount}")
+        
+    except Exception as e:
+        logger.error(f"Error updating goal: {e}")
+        raise
+
+
+def delete_goal(self, nickname: str, goal_name: str):
+    """Видаляє ціль"""
+    ws = self.get_goals_worksheet()
+    
+    try:
+        cell = ws.find(goal_name)
+        if cell:
+            ws.delete_rows(cell.row)
+            logger.info(f"Goal deleted: {goal_name}")
+    except Exception as e:
+        logger.error(f"Error deleting goal: {e}")
+        raise
+
+
+def get_categories_worksheet(self):
+    """Отримує або створює аркуш категорій"""
+    worksheet_title = "custom_categories"
+    try:
+        return self.spreadsheet.worksheet(worksheet_title)
+    except WorksheetNotFound:
+        ws = self.spreadsheet.add_worksheet(title=worksheet_title, rows=1000, cols=4)
+        ws.append_row(["nickname", "category_name", "emoji", "is_expense"])
+        return ws
+
+
+def get_user_categories(self, nickname: str, is_expense: bool = True) -> List[Dict]:
+    """Отримує користувацькі категорії"""
+    ws = self.get_categories_worksheet()
+    all_categories = ws.get_all_records()
+    
+    return [
+        c for c in all_categories 
+        if c.get('nickname') == nickname 
+        and c.get('is_expense') == is_expense
+    ]
+
+
+def add_custom_category(
+    self,
+    nickname: str,
+    category_name: str,
+    emoji: str = "📌",
+    is_expense: bool = True
+):
+    """Додає власну категорію"""
+    ws = self.get_categories_worksheet()
+    
+    # Перевіряємо чи не існує вже
+    existing = self.get_user_categories(nickname, is_expense)
+    if any(c.get('category_name') == category_name for c in existing):
+        raise ValueError("Категорія вже існує")
+    
+    row = [nickname, category_name, emoji, is_expense]
+    ws.append_row(row)
+    logger.info(f"Custom category added: {category_name} for {nickname}")
+
+
+def delete_custom_category(self, nickname: str, category_name: str):
+    """Видаляє власну категорію"""
+    ws = self.get_categories_worksheet()
+    
+    try:
+        # Шукаємо комбінацію nickname + category_name
+        all_values = ws.get_all_values()
+        for idx, row in enumerate(all_values[1:], start=2):  # Skip header
+            if row[0] == nickname and row[1] == category_name:
+                ws.delete_rows(idx)
+                logger.info(f"Category deleted: {category_name}")
+                return
+        
+        raise ValueError("Категорія не знайдена")
+        
+    except Exception as e:
+        logger.error(f"Error deleting category: {e}")
+        raise
+
+
+def get_budgets_worksheet(self):
+    """Отримує або створює аркуш бюджетів"""
+    worksheet_title = "category_budgets"
+    try:
+        return self.spreadsheet.worksheet(worksheet_title)
+    except WorksheetNotFound:
+        ws = self.spreadsheet.add_worksheet(title=worksheet_title, rows=1000, cols=5)
+        ws.append_row([
+            "nickname", "category", "budget_amount", 
+            "current_spent", "period"
+        ])
+        return ws
+
+
+def set_category_budget(
+    self,
+    nickname: str,
+    category: str,
+    budget_amount: float,
+    period: str = "monthly"
+):
+    """Встановлює бюджет для категорії"""
+    ws = self.get_budgets_worksheet()
+    
+    # Перевіряємо чи існує бюджет
+    existing_budgets = ws.get_all_records()
+    for idx, budget in enumerate(existing_budgets, start=2):
+        if budget.get('nickname') == nickname and budget.get('category') == category:
+            # Оновлюємо існуючий
+            ws.update_cell(idx, 3, budget_amount)
+            ws.update_cell(idx, 4, 0)  # Скидаємо витрати
+            logger.info(f"Budget updated: {category} - {budget_amount}")
+            return
+    
+    # Додаємо новий
+    row = [nickname, category, budget_amount, 0, period]
+    ws.append_row(row)
+    logger.info(f"Budget set: {category} - {budget_amount}")
+
+
+def get_category_budgets(self, nickname: str) -> List[Dict]:
+    """Отримує всі бюджети користувача"""
+    ws = self.get_budgets_worksheet()
+    all_budgets = ws.get_all_records()
+    return [b for b in all_budgets if b.get('nickname') == nickname]
+
+
+def update_budget_spending(self, nickname: str, category: str, amount: float):
+    """Оновлює витрати по бюджету"""
+    ws = self.get_budgets_worksheet()
+    
+    try:
+        all_budgets = ws.get_all_values()
+        for idx, row in enumerate(all_budgets[1:], start=2):
+            if row[0] == nickname and row[1] == category:
+                current_spent = float(row[3] or 0)
+                new_spent = current_spent + abs(amount)
+                ws.update_cell(idx, 4, new_spent)
+                
+                # Перевіряємо чи не перевищено бюджет
+                budget_limit = float(row[2])
+                if new_spent > budget_limit:
+                    logger.warning(f"Budget exceeded for {category}: {new_spent}/{budget_limit}")
+                    return True  # Бюджет перевищено
+                
+                return False
+    except Exception as e:
+        logger.error(f"Error updating budget: {e}")
+    
+    return False
+
+
+def reset_monthly_budgets(self):
+    """Скидає витрати для місячних бюджетів (викликається scheduler)"""
+    ws = self.get_budgets_worksheet()
+    
+    try:
+        all_budgets = ws.get_all_values()
+        for idx, row in enumerate(all_budgets[1:], start=2):
+            if row[4] == "monthly":  # period column
+                ws.update_cell(idx, 4, 0)  # current_spent column
+        
+        logger.info("Monthly budgets reset")
+        
+    except Exception as e:
+        logger.error(f"Error resetting budgets: {e}")
+
+
+def get_analytics_data(self, nickname: str, period_days: int = 30) -> Dict:
+    """Отримує аналітичні дані для AI аналізу"""
+    transactions = self.get_all_transactions(nickname)
+    
+    # Фільтруємо за період
+    cutoff_date = datetime.now() - timedelta(days=period_days)
+    period_transactions = [
+        t for t in transactions
+        if datetime.fromisoformat(t['date']) >= cutoff_date
+    ]
+    
+    # Підраховуємо метрики
+    total_income = sum(float(t['amount']) for t in period_transactions if float(t.get('amount', 0)) > 0)
+    total_expense = sum(abs(float(t['amount'])) for t in period_transactions if float(t.get('amount', 0)) < 0)
+    
+    # Категорії
+    expense_by_category = defaultdict(float)
+    income_by_category = defaultdict(float)
+    
+    for t in period_transactions:
+        amount = float(t.get('amount', 0))
+        category = t.get('category', 'Інше')
+        
+        if amount < 0:
+            expense_by_category[category] += abs(amount)
+        else:
+            income_by_category[category] += amount
+    
+    # Середнє за день
+    avg_daily_expense = total_expense / period_days if period_days > 0 else 0
+    avg_daily_income = total_income / period_days if period_days > 0 else 0
+    
+    return {
+        'total_income': total_income,
+        'total_expense': total_expense,
+        'balance_change': total_income - total_expense,
+        'expense_by_category': dict(expense_by_category),
+        'income_by_category': dict(income_by_category),
+        'avg_daily_expense': avg_daily_expense,
+        'avg_daily_income': avg_daily_income,
+        'transaction_count': len(period_transactions),
+        'top_expense_category': max(expense_by_category.items(), key=lambda x: x[1])[0] if expense_by_category else None,
+        'savings_rate': ((total_income - total_expense) / total_income * 100) if total_income > 0 else 0
+    }
+
 
 # Singleton instance
 sheets_service = SheetsService()
