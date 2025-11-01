@@ -1,1 +1,1 @@
-echo "3.11.9" > .python-version
+echo "python-3.11.9" > runtime.txt
