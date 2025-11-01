@@ -1,5 +1,5 @@
 # ============================================
-# FILE: app/handlers/transactions.py (COMPLETE)
+# FILE: app/handlers/transactions.py (COMPLETE FULL VERSION)
 # ============================================
 """
 Обробники для транзакцій (витрати/доходи) - ПОВНА ВЕРСІЯ
@@ -104,6 +104,75 @@ async def process_transaction(message: Message, state: FSMContext):
             f"📝 Опис: {note or '—'}\n"
             f"💳 Новий баланс: {format_currency(balance, currency)}\n\n"
             f"Хочеш щось змінити?",
+            reply_markup=get_transaction_edit_keyboard()
+        )
+        
+        await state.set_state(None)
+        
+    except Exception as e:
+        logger.error(f"Error adding transaction: {e}", exc_info=True)
+        await message.reply("❌ Помилка при додаванні транзакції. Спробуй ще раз.")
+
+
+# ==================== РЕДАГУВАННЯ ТРАНЗАКЦІЙ ====================
+
+@router.callback_query(F.data == "edit_amount")
+async def edit_amount_handler(callback: CallbackQuery, state: FSMContext):
+    """Початок редагування суми"""
+    data = await state.get_data()
+    current_amount = data.get('amount', 0)
+    
+    await callback.message.edit_text(
+        f"✏️ <b>Редагування суми</b>\n\n"
+        f"Поточна сума: {format_currency(abs(current_amount))}\n\n"
+        f"Введи нову суму:"
+    )
+    await state.set_state(UserState.edit_amount)
+    await callback.answer()
+
+
+@router.message(UserState.edit_amount)
+async def process_edit_amount(message: Message, state: FSMContext):
+    """Обробка нової суми"""
+    is_valid, amount, error = validate_amount(message.text)
+    
+    if not is_valid:
+        await message.reply(f"❌ {error}")
+        return
+    
+    data = await state.get_data()
+    row_index = data.get('last_transaction_row')
+    transaction_type = data.get('transaction_type')
+    nickname = message.from_user.username or "anonymous"
+    
+    # Визначаємо знак
+    if transaction_type == "expense" and amount > 0:
+        amount = -amount
+    elif transaction_type == "income" and amount < 0:
+        amount = abs(amount)
+    
+    try:
+        # Оновлюємо в Google Sheets (колонка 3 = amount)
+        sheets_service.update_transaction(nickname, row_index, 3, amount)
+        
+        # Перераховуємо баланс
+        transactions = sheets_service.get_all_transactions(nickname)
+        new_balance = sum(float(t['amount']) for t in transactions)
+        balance, currency = sheets_service.get_current_balance(nickname)
+        sheets_service.update_balance(nickname, new_balance, currency)
+        
+        await state.update_data(amount=amount)
+        
+        category = data.get('category', 'Інше')
+        note = data.get('note', '')
+        
+        await message.answer(
+            f"✅ <b>Сума оновлена!</b>\n\n"
+            f"💰 Нова сума: {format_currency(abs(amount), currency)}\n"
+            f"📂 Категорія: {category}\n"
+            f"📝 Опис: {note or '—'}\n"
+            f"💳 Новий баланс: {format_currency(new_balance, currency)}\n\n"
+            f"Що ще змінити?",
             reply_markup=get_transaction_edit_keyboard()
         )
         
@@ -374,72 +443,3 @@ async def view_recent_transactions(callback: CallbackQuery):
     except Exception as e:
         logger.error(f"Error viewing transactions: {e}", exc_info=True)
         await callback.answer("❌ Помилка", show_alert=True)
-        
-    except Exception as e:
-        logger.error(f"Error adding transaction: {e}", exc_info=True)
-        await message.reply("❌ Помилка при додаванні транзакції. Спробуй ще раз.")
-
-
-# ==================== РЕДАГУВАННЯ ТРАНЗАКЦІЙ ====================
-
-@router.callback_query(F.data == "edit_amount")
-async def edit_amount_handler(callback: CallbackQuery, state: FSMContext):
-    """Початок редагування суми"""
-    data = await state.get_data()
-    current_amount = data.get('amount', 0)
-    
-    await callback.message.edit_text(
-        f"✏️ <b>Редагування суми</b>\n\n"
-        f"Поточна сума: {format_currency(abs(current_amount))}\n\n"
-        f"Введи нову суму:"
-    )
-    await state.set_state(UserState.edit_amount)
-    await callback.answer()
-
-
-@router.message(UserState.edit_amount)
-async def process_edit_amount(message: Message, state: FSMContext):
-    """Обробка нової суми"""
-    is_valid, amount, error = validate_amount(message.text)
-    
-    if not is_valid:
-        await message.reply(f"❌ {error}")
-        return
-    
-    data = await state.get_data()
-    row_index = data.get('last_transaction_row')
-    transaction_type = data.get('transaction_type')
-    nickname = message.from_user.username or "anonymous"
-    
-    # Визначаємо знак
-    if transaction_type == "expense" and amount > 0:
-        amount = -amount
-    elif transaction_type == "income" and amount < 0:
-        amount = abs(amount)
-    
-    try:
-        # Оновлюємо в Google Sheets (колонка 3 = amount)
-        sheets_service.update_transaction(nickname, row_index, 3, amount)
-        
-        # Перераховуємо баланс
-        transactions = sheets_service.get_all_transactions(nickname)
-        new_balance = sum(float(t['amount']) for t in transactions)
-        balance, currency = sheets_service.get_current_balance(nickname)
-        sheets_service.update_balance(nickname, new_balance, currency)
-        
-        await state.update_data(amount=amount)
-        
-        category = data.get('category', 'Інше')
-        note = data.get('note', '')
-        
-        await message.answer(
-            f"✅ <b>Сума оновлена!</b>\n\n"
-            f"💰 Нова сума: {format_currency(abs(amount), currency)}\n"
-            f"📂 Категорія: {category}\n"
-            f"📝 Опис: {note or '—'}\n"
-            f"💳 Новий баланс: {format_currency(new_balance, currency)}\n\n"
-            f"Що ще змінити?",
-            reply_markup=get_transaction_edit_keyboard()
-        )
-        
-        await state.set_state(None)
