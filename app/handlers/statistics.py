@@ -9,6 +9,7 @@ from aiogram import Router, F
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 
+from app.core.states import UserState  # ← ДОДАНО!
 from app.services.sheets_service import sheets_service
 from app.keyboards.inline import get_stats_period_keyboard
 from app.utils.formatters import format_statistics, format_currency
