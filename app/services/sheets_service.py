@@ -465,6 +465,14 @@ class SheetsService:
             'savings_rate': ((total_income - total_expense) / total_income * 100) if total_income > 0 else 0
         }
 
+    def invalidate_cache(self, nickname: str):
+        """Очищає кеш після змін"""
+        cache_key = f"transactions_{nickname}"
+        balance_key = f"balance_{nickname}"
+        if hasattr(self, '_cache'):
+            self._cache.pop(cache_key, None)
+            self._cache.pop(balance_key, None)
+
 
 # Singleton instance
 sheets_service = SheetsService()
