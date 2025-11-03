@@ -1,5 +1,5 @@
 # ============================================
-# FILE: app/utils/helpers.py (TIMEZONE FIX)
+# FILE: app/utils/helpers.py (FINAL FIX)
 # ============================================
 """
 Допоміжні функції з виправленням timezone
@@ -91,40 +91,40 @@ def filter_transactions_by_period(transactions: List[Dict], period: str) -> List
             # Парсимо дату з транзакції
             date_str = t.get('date', '')
             
+            # Пропускаємо initial та пусті дати
             if not date_str or date_str == 'initial':
                 continue
             
-            # 🔥 КРИТИЧНИЙ ФІКС: Парсинг дати з автоматичним додаванням timezone
-            if isinstance(date_str, str):
-                try:
-                    # Спроба з ISO format
-                    t_date = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
-                except ValueError:
-                    try:
-                        # Спроба без timezone - парсимо як naive
-                        t_date = datetime.fromisoformat(date_str)
-                        
-                        # 🔥 КЛЮЧОВИЙ ФІКС: Якщо дата без timezone, додаємо UTC
-                        if t_date.tzinfo is None:
-                            t_date = pytz.UTC.localize(t_date)
-                            
-                    except ValueError:
-                        logger.warning(f"   Transaction {idx}: Invalid date format: {date_str}")
-                        continue
-            else:
+            # Парсимо дату
+            if not isinstance(date_str, str):
                 logger.warning(f"   Transaction {idx}: Date is not string: {type(date_str)}")
                 continue
             
-            # Логуємо перші 3 транзакції для діагностики
+            # Спроба парсингу
+            try:
+                # Спроба з ISO format (може мати timezone)
+                t_date = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            except ValueError:
+                try:
+                    # Спроба без timezone
+                    t_date = datetime.fromisoformat(date_str)
+                except ValueError:
+                    logger.warning(f"   Transaction {idx}: Invalid date format: {date_str}")
+                    continue
+            
+            # 🔥 КРИТИЧНИЙ ФІКС: Додаємо timezone ОДРАЗУ після парсингу
+            if t_date.tzinfo is None:
+                t_date = pytz.UTC.localize(t_date)
+            
+            # Логуємо перші 3 транзакції ПІСЛЯ додавання timezone
             if idx < 3:
                 logger.info(f"   Transaction {idx}:")
                 logger.info(f"      Date string: {date_str}")
-                logger.info(f"      Parsed date: {t_date}")
-                logger.info(f"      Has timezone: {t_date.tzinfo is not None}")
-                logger.info(f"      In range: {start_date <= t_date <= end_date}")
+                logger.info(f"      Parsed date (with TZ): {t_date}")
                 logger.info(f"      Amount: {t.get('amount')}")
+                logger.info(f"      In range: {start_date <= t_date <= end_date}")
             
-            # Порівнюємо з start_date та end_date
+            # Тепер порівнюємо - обидві дати з timezone
             if start_date <= t_date <= end_date:
                 filtered.append(t)
                 if idx < 3:
@@ -138,7 +138,8 @@ def filter_transactions_by_period(transactions: List[Dict], period: str) -> List
                         logger.info(f"         Reason: {t_date} > {end_date}")
                 
         except Exception as e:
-            logger.warning(f"   Transaction {idx}: Error parsing: {e}")
+            # Тепер це буде спрацьовувати тільки для справді несподіваних помилок
+            logger.error(f"   Transaction {idx}: Unexpected error: {e}", exc_info=True)
             continue
     
     logger.info(f"   ✅ Filtered result: {len(filtered)} transactions")
