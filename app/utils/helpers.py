@@ -1,8 +1,8 @@
 # ============================================
-# FILE: app/utils/helpers.py (ULTRA DEBUG VERSION)
+# FILE: app/utils/helpers.py (TIMEZONE FIX)
 # ============================================
 """
-Допоміжні функції з детальним логуванням
+Допоміжні функції з виправленням timezone
 """
 
 from datetime import datetime, timedelta
@@ -91,22 +91,23 @@ def filter_transactions_by_period(transactions: List[Dict], period: str) -> List
             # Парсимо дату з транзакції
             date_str = t.get('date', '')
             
-            if not date_str:
-                logger.warning(f"   Transaction {idx}: No date field")
+            if not date_str or date_str == 'initial':
                 continue
             
-            # Підтримка різних форматів
+            # 🔥 КРИТИЧНИЙ ФІКС: Парсинг дати з автоматичним додаванням timezone
             if isinstance(date_str, str):
-                # Спроба з ISO format (з timezone)
                 try:
+                    # Спроба з ISO format
                     t_date = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
                 except ValueError:
                     try:
-                        # Спроба без timezone
+                        # Спроба без timezone - парсимо як naive
                         t_date = datetime.fromisoformat(date_str)
-                        # Додаємо UTC якщо немає timezone
+                        
+                        # 🔥 КЛЮЧОВИЙ ФІКС: Якщо дата без timezone, додаємо UTC
                         if t_date.tzinfo is None:
                             t_date = pytz.UTC.localize(t_date)
+                            
                     except ValueError:
                         logger.warning(f"   Transaction {idx}: Invalid date format: {date_str}")
                         continue
@@ -119,6 +120,7 @@ def filter_transactions_by_period(transactions: List[Dict], period: str) -> List
                 logger.info(f"   Transaction {idx}:")
                 logger.info(f"      Date string: {date_str}")
                 logger.info(f"      Parsed date: {t_date}")
+                logger.info(f"      Has timezone: {t_date.tzinfo is not None}")
                 logger.info(f"      In range: {start_date <= t_date <= end_date}")
                 logger.info(f"      Amount: {t.get('amount')}")
             
@@ -135,7 +137,7 @@ def filter_transactions_by_period(transactions: List[Dict], period: str) -> List
                     else:
                         logger.info(f"         Reason: {t_date} > {end_date}")
                 
-        except (ValueError, KeyError, TypeError) as e:
+        except Exception as e:
             logger.warning(f"   Transaction {idx}: Error parsing: {e}")
             continue
     
@@ -163,6 +165,8 @@ def get_emoji_for_category(category: str) -> str:
         'телефон': '📱',
         'кафе': '☕',
         'ресторан': '🍽️',
+        'робота': '💼',
+        'інше': '📌',
     }
     
     return category_emojis.get(category.lower(), '📌')
