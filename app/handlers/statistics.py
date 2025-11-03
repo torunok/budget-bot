@@ -1,21 +1,18 @@
 # ============================================
-# FILE: app/handlers/statistics.py 
+# FILE: app/handlers/statistics.py (WITH DEBUG)
 # ============================================
 """
-Обробники для статистики - ПОВНА ВЕРСІЯ
+Обробники для статистики - З ДІАГНОСТИКОЮ
 """
 import logging
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, BufferedInputFile, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
 
 from app.services.sheets_service import sheets_service
-from app.services.chart_service import chart_service
 from app.keyboards.inline import get_stats_period_keyboard
 from app.utils.formatters import format_statistics, format_currency
 from app.utils.helpers import filter_transactions_by_period
-from app.utils.validators import validate_amount
-from app.core.states import UserState
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -30,11 +27,32 @@ async def show_statistics(message: Message):
         balance, currency = sheets_service.get_current_balance(nickname)
         transactions = sheets_service.get_all_transactions(nickname)
         
+        # 🔍 ДІАГНОСТИКА 1: Загальна кількість транзакцій
+        logger.info(f"📊 Statistics for {nickname}")
+        logger.info(f"   Total transactions: {len(transactions)}")
+        
+        # 🔍 ДІАГНОСТИКА 2: Перші 3 транзакції
+        for idx, t in enumerate(transactions[:3]):
+            logger.info(f"   Transaction {idx+1}:")
+            logger.info(f"      Date: {t.get('date')}")
+            logger.info(f"      Amount: {t.get('amount')}")
+            logger.info(f"      Category: {t.get('category')}")
+            logger.info(f"      Is_Subscription: {t.get('Is_Subscription')}")
+        
+        # Фільтруємо підписки
+        non_subscription = [t for t in transactions if not t.get('Is_Subscription')]
+        logger.info(f"   Non-subscription transactions: {len(non_subscription)}")
+        
         # Фільтруємо сьогоднішні транзакції
-        today_transactions = filter_transactions_by_period(
-            [t for t in transactions if not t.get('Is_Subscription')],
-            'today'
-        )
+        today_transactions = filter_transactions_by_period(non_subscription, 'today')
+        
+        # 🔍 ДІАГНОСТИКА 3: Відфільтровані транзакції
+        logger.info(f"   Today transactions after filter: {len(today_transactions)}")
+        
+        for idx, t in enumerate(today_transactions[:3]):
+            logger.info(f"   Today Transaction {idx+1}:")
+            logger.info(f"      Date: {t.get('date')}")
+            logger.info(f"      Amount: {t.get('amount')}")
         
         stats_text = format_statistics(today_transactions, currency)
         
@@ -63,11 +81,19 @@ async def show_period_statistics(callback: CallbackQuery):
     try:
         transactions = sheets_service.get_all_transactions(nickname)
         
+        # 🔍 ДІАГНОСТИКА
+        logger.info(f"📊 Period stats: {period} for {nickname}")
+        logger.info(f"   Total transactions: {len(transactions)}")
+        
         # Фільтруємо за періодом
-        period_transactions = filter_transactions_by_period(
-            [t for t in transactions if not t.get('Is_Subscription')],
-            period
-        )
+        non_subscription = [t for t in transactions if not t.get('Is_Subscription')]
+        period_transactions = filter_transactions_by_period(non_subscription, period)
+        
+        logger.info(f"   Filtered transactions for '{period}': {len(period_transactions)}")
+        
+        # Показуємо перші 3
+        for idx, t in enumerate(period_transactions[:3]):
+            logger.info(f"   Transaction {idx+1}: {t.get('date')} - {t.get('amount')}")
         
         if not period_transactions:
             await callback.answer("За цей період немає транзакцій", show_alert=True)
