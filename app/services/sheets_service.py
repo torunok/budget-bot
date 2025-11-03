@@ -1,8 +1,8 @@
 # ============================================
-# FILE: app/services/sheets_service.py
+# FILE: app/services/sheets_service.py (FIXED)
 # ============================================
 """
-Сервіс для роботи з Google Sheets
+Сервіс для роботи з Google Sheets - БЕЗ КЕШУВАННЯ
 """
 
 import logging
@@ -24,8 +24,7 @@ class SheetsService:
     
     def __init__(self):
         try:
-            # >>> ЗМІНА: АУТЕНТИФІКАЦІЯ ЧЕРЕЗ СЛОВНИК
-            # 1. Парсимо JSON-рядок, отриманий зі змінної оточення
+            # Парсимо JSON-рядок, отриманий зі змінної оточення
             creds_json = config.GOOGLE_SERVICE_ACCOUNT_JSON
             
             if not creds_json:
@@ -33,7 +32,7 @@ class SheetsService:
             
             creds_dict = json.loads(creds_json)
             
-            # 2. Аутентифікація через словник
+            # Аутентифікація через словник
             self.gc = gspread.service_account_from_dict(creds_dict) 
             
             self.spreadsheet = self.gc.open_by_key(config.SPREADSHEET_ID)
@@ -41,7 +40,6 @@ class SheetsService:
             
         except Exception as e:
             logger.error(f"Failed to connect to Google Sheets: {e}")
-            # >>> Додаткова інформація про помилку аутентифікації
             logger.error("Ensure GOOGLE_SERVICE_ACCOUNT_JSON and SPREADSHEET_ID are correctly set in Render environment.")
             raise
     
@@ -93,20 +91,36 @@ class SheetsService:
                nickname, new_balance, currency, is_subscription]
         ws.append_row(row)
         
-        logger.info(f"Added transaction for {nickname}: {amount} {currency}")
+        # 🔥 КРИТИЧНО: Очищаємо внутрішній кеш gspread
+        if hasattr(ws, '_properties'):
+            ws._properties = None
+        
+        logger.info(f"✅ Added transaction for {nickname}: {amount} {currency}")
         return len(ws.get_all_values())
     
     def get_current_balance(self, nickname: str) -> Tuple[float, str]:
-        """Отримує поточний баланс та валюту"""
+        """Отримує поточний баланс та валюту - БЕЗ КЕШУ"""
         ws = self.get_or_create_worksheet(nickname)
-        last_row_index = len(ws.col_values(1))
         
+        # 🔥 КРИТИЧНА ЗМІНА: Читаємо через get_all_values замість cell()
         try:
-            balance = float(ws.cell(last_row_index, 7).value)
-            currency = ws.cell(last_row_index, 8).value or config.DEFAULT_CURRENCY
+            all_values = ws.get_all_values(value_render_option='UNFORMATTED_VALUE')
+            
+            if len(all_values) < 2:
+                logger.warning(f"No transactions for {nickname}, returning default balance")
+                return 0.0, config.DEFAULT_CURRENCY
+            
+            last_row = all_values[-1]
+            
+            # Колонки: date, user_id, amount, category, note, nickname, balance, currency, Is_Subscription
+            balance = float(last_row[6]) if len(last_row) > 6 and last_row[6] else 0.0
+            currency = last_row[7] if len(last_row) > 7 and last_row[7] else config.DEFAULT_CURRENCY
+            
+            logger.info(f"✅ Balance for {nickname}: {balance} {currency} (from row {len(all_values)})")
             return balance, currency
+            
         except (ValueError, IndexError, TypeError) as e:
-            logger.error(f"Error getting balance for {nickname}: {e}")
+            logger.error(f"Error getting balance for {nickname}: {e}", exc_info=True)
             return 0.0, config.DEFAULT_CURRENCY
     
     def update_balance(self, nickname: str, new_balance: float, currency: str):
@@ -116,28 +130,82 @@ class SheetsService:
         
         ws.update_cell(last_row_index, 7, new_balance)
         ws.update_cell(last_row_index, 8, currency)
-        logger.info(f"Updated balance for {nickname}: {new_balance} {currency}")
+        
+        # Очищаємо кеш
+        if hasattr(ws, '_properties'):
+            ws._properties = None
+        
+        logger.info(f"✅ Updated balance for {nickname}: {new_balance} {currency}")
     
     def get_all_transactions(self, nickname: str) -> List[Dict]:
-        """Отримує всі транзакції користувача"""
+        """Отримує всі транзакції користувача - БЕЗ КЕШУ"""
         ws = self.get_or_create_worksheet(nickname)
-        return ws.get_all_records()
+        
+        # 🔥 КРИТИЧНА ЗМІНА: Примусово оновлюємо дані з Google Sheets
+        try:
+            # Використовуємо value_render_option для свіжих даних
+            all_values = ws.get_all_values(value_render_option='UNFORMATTED_VALUE')
+            
+            if len(all_values) < 2:
+                logger.warning(f"No transactions for {nickname}")
+                return []
+            
+            headers = all_values[0]
+            rows = all_values[1:]
+            
+            # Конвертуємо в список словників
+            transactions = []
+            for row_idx, row in enumerate(rows):
+                transaction = {}
+                for col_idx, header in enumerate(headers):
+                    if col_idx < len(row):
+                        transaction[header] = row[col_idx]
+                    else:
+                        transaction[header] = None
+                transactions.append(transaction)
+            
+            logger.info(f"✅ Loaded {len(transactions)} transactions for {nickname}")
+            
+            # 🔍 ДІАГНОСТИКА: Показуємо останні 3 транзакції
+            if transactions:
+                logger.info(f"📊 Last 3 transactions:")
+                for t in transactions[-3:]:
+                    logger.info(f"   {t.get('date')} | {t.get('amount')} | {t.get('category')}")
+            
+            return transactions
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting transactions: {e}", exc_info=True)
+            # Fallback до старого методу
+            return ws.get_all_records()
     
     def get_subscriptions(self, nickname: str) -> List[Dict]:
         """Отримує всі підписки користувача"""
         transactions = self.get_all_transactions(nickname)
-        return [t for t in transactions if str(t.get('Is_Subscription', '')).lower() == 'true']
+        subscriptions = [t for t in transactions if str(t.get('Is_Subscription', '')).upper() == 'TRUE']
+        logger.info(f"Found {len(subscriptions)} subscriptions for {nickname}")
+        return subscriptions
     
     def update_transaction(self, nickname: str, row_index: int, column_index: int, value):
         """Оновлює значення в транзакції"""
         ws = self.get_or_create_worksheet(nickname)
         ws.update_cell(row_index, column_index, value)
+        
+        # Очищаємо кеш
+        if hasattr(ws, '_properties'):
+            ws._properties = None
+        
         logger.info(f"Updated transaction at row {row_index}, col {column_index}")
     
     def delete_transaction(self, nickname: str, row_index: int):
         """Видаляє транзакцію"""
         ws = self.get_or_create_worksheet(nickname)
         ws.delete_rows(row_index)
+        
+        # Очищаємо кеш
+        if hasattr(ws, '_properties'):
+            ws._properties = None
+        
         logger.info(f"Deleted transaction at row {row_index} for {nickname}")
     
     def get_feedback_worksheet(self):
@@ -246,17 +314,13 @@ class SheetsService:
         ws = self.get_goals_worksheet()
         
         try:
-            # Знаходимо ціль
             cell = ws.find(goal_name)
             if not cell:
                 raise ValueError(f"Goal {goal_name} not found")
             
             row_index = cell.row
             
-            # Оновлюємо current_amount (колонка 4)
             ws.update_cell(row_index, 4, new_amount)
-            
-            # Оновлюємо completed (колонка 6)
             ws.update_cell(row_index, 6, completed)
             
             logger.info(f"Goal progress updated: {goal_name} - {new_amount}")
@@ -309,7 +373,6 @@ class SheetsService:
         """Додає власну категорію"""
         ws = self.get_categories_worksheet()
         
-        # Перевіряємо чи не існує вже
         existing = self.get_user_categories(nickname, is_expense)
         if any(c.get('category_name') == category_name for c in existing):
             raise ValueError("Категорія вже існує")
@@ -323,9 +386,8 @@ class SheetsService:
         ws = self.get_categories_worksheet()
         
         try:
-            # Шукаємо комбінацію nickname + category_name
             all_values = ws.get_all_values()
-            for idx, row in enumerate(all_values[1:], start=2):  # Skip header
+            for idx, row in enumerate(all_values[1:], start=2):
                 if row[0] == nickname and row[1] == category_name:
                     ws.delete_rows(idx)
                     logger.info(f"Category deleted: {category_name}")
@@ -360,17 +422,14 @@ class SheetsService:
         """Встановлює бюджет для категорії"""
         ws = self.get_budgets_worksheet()
         
-        # Перевіряємо чи існує бюджет
         existing_budgets = ws.get_all_records()
         for idx, budget in enumerate(existing_budgets, start=2):
             if budget.get('nickname') == nickname and budget.get('category') == category:
-                # Оновлюємо існуючий
                 ws.update_cell(idx, 3, budget_amount)
-                ws.update_cell(idx, 4, 0)  # Скидаємо витрати
+                ws.update_cell(idx, 4, 0)
                 logger.info(f"Budget updated: {category} - {budget_amount}")
                 return
         
-        # Додаємо новий
         row = [nickname, category, budget_amount, 0, period]
         ws.append_row(row)
         logger.info(f"Budget set: {category} - {budget_amount}")
@@ -393,11 +452,10 @@ class SheetsService:
                     new_spent = current_spent + abs(amount)
                     ws.update_cell(idx, 4, new_spent)
                     
-                    # Перевіряємо чи не перевищено бюджет
                     budget_limit = float(row[2])
                     if new_spent > budget_limit:
                         logger.warning(f"Budget exceeded for {category}: {new_spent}/{budget_limit}")
-                        return True  # Бюджет перевищено
+                        return True
                     
                     return False
         except Exception as e:
@@ -406,14 +464,14 @@ class SheetsService:
         return False
 
     def reset_monthly_budgets(self):
-        """Скидає витрати для місячних бюджетів (викликається scheduler)"""
+        """Скидає витрати для місячних бюджетів"""
         ws = self.get_budgets_worksheet()
         
         try:
             all_budgets = ws.get_all_values()
             for idx, row in enumerate(all_budgets[1:], start=2):
-                if row[4] == "monthly":  # period column
-                    ws.update_cell(idx, 4, 0)  # current_spent column
+                if row[4] == "monthly":
+                    ws.update_cell(idx, 4, 0)
             
             logger.info("Monthly budgets reset")
             
@@ -424,18 +482,15 @@ class SheetsService:
         """Отримує аналітичні дані для AI аналізу"""
         transactions = self.get_all_transactions(nickname)
         
-        # Фільтруємо за період
         cutoff_date = datetime.now() - timedelta(days=period_days)
         period_transactions = [
             t for t in transactions
             if datetime.fromisoformat(t['date']) >= cutoff_date
         ]
         
-        # Підраховуємо метрики
         total_income = sum(float(t['amount']) for t in period_transactions if float(t.get('amount', 0)) > 0)
         total_expense = sum(abs(float(t['amount'])) for t in period_transactions if float(t.get('amount', 0)) < 0)
         
-        # Категорії
         expense_by_category = defaultdict(float)
         income_by_category = defaultdict(float)
         
@@ -448,7 +503,6 @@ class SheetsService:
             else:
                 income_by_category[category] += amount
         
-        # Середнє за день
         avg_daily_expense = total_expense / period_days if period_days > 0 else 0
         avg_daily_income = total_income / period_days if period_days > 0 else 0
         
@@ -464,14 +518,6 @@ class SheetsService:
             'top_expense_category': max(expense_by_category.items(), key=lambda x: x[1])[0] if expense_by_category else None,
             'savings_rate': ((total_income - total_expense) / total_income * 100) if total_income > 0 else 0
         }
-
-    def invalidate_cache(self, nickname: str):
-        """Очищає кеш після змін"""
-        cache_key = f"transactions_{nickname}"
-        balance_key = f"balance_{nickname}"
-        if hasattr(self, '_cache'):
-            self._cache.pop(cache_key, None)
-            self._cache.pop(balance_key, None)
 
 
 # Singleton instance
