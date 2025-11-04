@@ -1,8 +1,8 @@
 # ============================================
-# FILE: app/services/sheets_service.py (FIXED)
+# FILE: app/services/sheets_service.py (COMPLETE FIXED)
 # ============================================
 """
-Сервіс для роботи з Google Sheets - БЕЗ КЕШУВАННЯ
+Сервіс для роботи з Google Sheets - БЕЗ агресивного очищення кешу
 """
 
 import logging
@@ -11,7 +11,6 @@ from typing import List, Dict, Optional, Tuple
 from collections import defaultdict
 import gspread
 from gspread.exceptions import WorksheetNotFound, APIError
-
 import json
 
 from app.config.settings import config
@@ -24,23 +23,20 @@ class SheetsService:
     
     def __init__(self):
         try:
-            # Парсимо JSON-рядок, отриманий зі змінної оточення
             creds_json = config.GOOGLE_SERVICE_ACCOUNT_JSON
             
             if not creds_json:
                 raise ValueError("GOOGLE_SERVICE_ACCOUNT_JSON is not set or empty.")
             
             creds_dict = json.loads(creds_json)
-            
-            # Аутентифікація через словник
             self.gc = gspread.service_account_from_dict(creds_dict) 
-            
             self.spreadsheet = self.gc.open_by_key(config.SPREADSHEET_ID)
+            
             logger.info("✅ Connected to Google Sheets")
             
         except Exception as e:
             logger.error(f"Failed to connect to Google Sheets: {e}")
-            logger.error("Ensure GOOGLE_SERVICE_ACCOUNT_JSON and SPREADSHEET_ID are correctly set in Render environment.")
+            logger.error("Ensure GOOGLE_SERVICE_ACCOUNT_JSON and SPREADSHEET_ID are correctly set.")
             raise
     
     def get_or_create_worksheet(self, nickname: str):
@@ -49,7 +45,6 @@ class SheetsService:
             ws = self.spreadsheet.worksheet(nickname)
             headers = ws.row_values(1)
             
-            # Перевірка та додавання відсутніх колонок
             required_columns = ['date', 'user_id', 'amount', 'category', 'note', 
                               'nickname', 'balance', 'currency', 'Is_Subscription']
             
@@ -91,19 +86,21 @@ class SheetsService:
                nickname, new_balance, currency, is_subscription]
         ws.append_row(row)
         
-        # 🔥 КРИТИЧНО: Очищаємо внутрішній кеш gspread
-        if hasattr(ws, '_properties'):
-            ws._properties = None
+        # Отримуємо кількість рядків для повернення індексу
+        try:
+            row_count = len(ws.get_all_values())
+        except:
+            row_count = len(ws.col_values(1))
         
         logger.info(f"✅ Added transaction for {nickname}: {amount} {currency}")
-        return len(ws.get_all_values())
+        return row_count
     
     def get_current_balance(self, nickname: str) -> Tuple[float, str]:
-        """Отримує поточний баланс та валюту - БЕЗ КЕШУ"""
+        """Отримує поточний баланс та валюту"""
         ws = self.get_or_create_worksheet(nickname)
         
-        # 🔥 КРИТИЧНА ЗМІНА: Читаємо через get_all_values замість cell()
         try:
+            # Читаємо всі дані без кешу
             all_values = ws.get_all_values(value_render_option='UNFORMATTED_VALUE')
             
             if len(all_values) < 2:
@@ -126,24 +123,24 @@ class SheetsService:
     def update_balance(self, nickname: str, new_balance: float, currency: str):
         """Оновлює баланс користувача"""
         ws = self.get_or_create_worksheet(nickname)
-        last_row_index = len(ws.col_values(1))
+        
+        try:
+            all_values = ws.get_all_values()
+            last_row_index = len(all_values)
+        except:
+            last_row_index = len(ws.col_values(1))
         
         ws.update_cell(last_row_index, 7, new_balance)
         ws.update_cell(last_row_index, 8, currency)
         
-        # Очищаємо кеш
-        if hasattr(ws, '_properties'):
-            ws._properties = None
-        
         logger.info(f"✅ Updated balance for {nickname}: {new_balance} {currency}")
     
     def get_all_transactions(self, nickname: str) -> List[Dict]:
-        """Отримує всі транзакції користувача - БЕЗ КЕШУ"""
+        """Отримує всі транзакції користувача"""
         ws = self.get_or_create_worksheet(nickname)
         
-        # 🔥 КРИТИЧНА ЗМІНА: Примусово оновлюємо дані з Google Sheets
         try:
-            # Використовуємо value_render_option для свіжих даних
+            # Використовуємо get_all_values для свіжих даних
             all_values = ws.get_all_values(value_render_option='UNFORMATTED_VALUE')
             
             if len(all_values) < 2:
@@ -155,7 +152,7 @@ class SheetsService:
             
             # Конвертуємо в список словників
             transactions = []
-            for row_idx, row in enumerate(rows):
+            for row in rows:
                 transaction = {}
                 for col_idx, header in enumerate(headers):
                     if col_idx < len(row):
@@ -190,22 +187,12 @@ class SheetsService:
         """Оновлює значення в транзакції"""
         ws = self.get_or_create_worksheet(nickname)
         ws.update_cell(row_index, column_index, value)
-        
-        # Очищаємо кеш
-        if hasattr(ws, '_properties'):
-            ws._properties = None
-        
         logger.info(f"Updated transaction at row {row_index}, col {column_index}")
     
     def delete_transaction(self, nickname: str, row_index: int):
         """Видаляє транзакцію"""
         ws = self.get_or_create_worksheet(nickname)
         ws.delete_rows(row_index)
-        
-        # Очищаємо кеш
-        if hasattr(ws, '_properties'):
-            ws._properties = None
-        
         logger.info(f"Deleted transaction at row {row_index} for {nickname}")
     
     def get_feedback_worksheet(self):
@@ -477,47 +464,6 @@ class SheetsService:
             
         except Exception as e:
             logger.error(f"Error resetting budgets: {e}")
-
-    def get_analytics_data(self, nickname: str, period_days: int = 30) -> Dict:
-        """Отримує аналітичні дані для AI аналізу"""
-        transactions = self.get_all_transactions(nickname)
-        
-        cutoff_date = datetime.now() - timedelta(days=period_days)
-        period_transactions = [
-            t for t in transactions
-            if datetime.fromisoformat(t['date']) >= cutoff_date
-        ]
-        
-        total_income = sum(float(t['amount']) for t in period_transactions if float(t.get('amount', 0)) > 0)
-        total_expense = sum(abs(float(t['amount'])) for t in period_transactions if float(t.get('amount', 0)) < 0)
-        
-        expense_by_category = defaultdict(float)
-        income_by_category = defaultdict(float)
-        
-        for t in period_transactions:
-            amount = float(t.get('amount', 0))
-            category = t.get('category', 'Інше')
-            
-            if amount < 0:
-                expense_by_category[category] += abs(amount)
-            else:
-                income_by_category[category] += amount
-        
-        avg_daily_expense = total_expense / period_days if period_days > 0 else 0
-        avg_daily_income = total_income / period_days if period_days > 0 else 0
-        
-        return {
-            'total_income': total_income,
-            'total_expense': total_expense,
-            'balance_change': total_income - total_expense,
-            'expense_by_category': dict(expense_by_category),
-            'income_by_category': dict(income_by_category),
-            'avg_daily_expense': avg_daily_expense,
-            'avg_daily_income': avg_daily_income,
-            'transaction_count': len(period_transactions),
-            'top_expense_category': max(expense_by_category.items(), key=lambda x: x[1])[0] if expense_by_category else None,
-            'savings_rate': ((total_income - total_expense) / total_income * 100) if total_income > 0 else 0
-        }
 
 
 # Singleton instance
