@@ -381,6 +381,37 @@ async def edit_transactions_menu(callback: CallbackQuery):
         logger.error(f"Error showing transactions for edit: {e}", exc_info=True)
         await callback.answer("❌ Помилка", show_alert=True)
 
+@router.callback_query(F.data.startswith("edit_tr_"))
+async def select_transaction_to_edit(callback: CallbackQuery, state: FSMContext):
+    """Вибір транзакції для редагування"""
+    index = int(callback.data.replace("edit_tr_", ""))
+    nickname = callback.from_user.username or "anonymous"
+    
+    try:
+        transactions = sheets_service.get_all_transactions(nickname)
+        recent = list(reversed(transactions))[:10]
+
+        if index < 0 or index >= len(recent):
+            await callback.answer("❌ Невірний індекс транзакції", show_alert=True)
+            return
+
+        transaction = recent[index]
+        await state.update_data(transaction=transaction)
+
+        await callback.message.edit_text(
+            "✏️ <b>Редагування транзакції</b>\n\n"
+            f"Дата: {transaction.get('date')}\n"
+            f"Сума: {transaction.get('amount')}\n"
+            f"Категорія: {transaction.get('category')}\n"
+            f"Примітка: {transaction.get('note')}\n\n"
+            "Введіть нові дані для транзакції:"
+        )
+
+    except Exception as e:
+        logger.error(f"Error selecting transaction to edit: {e}", exc_info=True)
+        await callback.answer("❌ Помилка", show_alert=True)
+
+
 
 # ==================== НАЗАД ====================
 
