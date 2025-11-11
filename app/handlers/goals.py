@@ -360,6 +360,9 @@ def get_goal_action_keyboard(goal: Dict) -> InlineKeyboardMarkup:
             InlineKeyboardButton(text="💰 Сума", callback_data="goal_action_amount")
         ],
         [
+            InlineKeyboardButton(text="💳 Змінити внесення", callback_data="goal_action_progress")
+        ],
+        [
             InlineKeyboardButton(text="📅 Дедлайн", callback_data="goal_action_deadline"),
             InlineKeyboardButton(text=toggle_text, callback_data="goal_action_toggle")
         ],
@@ -728,6 +731,29 @@ async def goal_action_deadline(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
+@router.callback_query(F.data == "goal_action_progress")
+async def goal_action_progress(callback: CallbackQuery, state: FSMContext):
+    """Запит на зміну накопиченої суми"""
+    data = await state.get_data()
+    goal = data.get('selected_goal')
+    goal_name = ensure_goal_selected(data)
+    currency = data.get('user_currency', 'UAH')
+    
+    if not goal or not goal_name:
+        await callback.answer("Спочатку обери ціль", show_alert=True)
+        return
+    
+    _, current, _, _ = get_goal_amounts(goal)
+    
+    await callback.message.edit_text(
+        f"💳 <b>Змінити внесення для '{goal_name}'</b>\n\n"
+        f"Зараз накопичено: {format_currency(current, currency)}\n"
+        f"Введи нову суму накопиченого (від 0 до цілі):"
+    )
+    await state.set_state(BudgetGoalState.edit_goal_progress)
+    await callback.answer()
+
+
 @router.callback_query(F.data == "goal_action_toggle")
 async def goal_action_toggle(callback: CallbackQuery, state: FSMContext):
     """Позначає/знімає виконання цілі"""
@@ -893,6 +919,66 @@ async def process_goal_deadline_edit(message: Message, state: FSMContext):
     except Exception as e:
         logger.error(f"Error updating goal deadline: {e}", exc_info=True)
         await message.reply("❌ Не вдалося оновити дедлайн.")
+
+
+@router.message(BudgetGoalState.edit_goal_progress)
+async def process_goal_progress_edit(message: Message, state: FSMContext):
+    """Оновлює поточну суму накопиченого"""
+    data = await state.get_data()
+    goal = data.get('selected_goal')
+    goal_name = data.get('selected_goal_name')
+    currency = data.get('user_currency', 'UAH')
+    nickname = message.from_user.username or "anonymous"
+    
+    if not goal or not goal_name:
+        await message.reply("Спочатку обери ціль у меню редагування.")
+        await state.clear()
+        return
+    
+    raw_value = message.text.strip().replace(",", ".")
+    try:
+        new_amount = float(raw_value)
+    except ValueError:
+        await message.reply("❌ Некоректна сума. Введи число, наприклад: 1500 або 1500.50")
+        return
+    
+    if new_amount < 0:
+        await message.reply("❌ Сума не може бути від'ємною.")
+        return
+    
+    target, _, _, _ = get_goal_amounts(goal)
+    if new_amount > target:
+        await message.reply("❌ Сума не може перевищувати цільову.")
+        return
+    
+    completed = new_amount >= target and target > 0
+    
+    try:
+        sheets_service.update_goal_progress(
+            nickname=nickname,
+            goal_name=goal_name,
+            new_amount=new_amount,
+            completed=completed
+        )
+        
+        goal['current_amount'] = new_amount
+        goal['completed'] = completed
+        
+        pct = (new_amount / target * 100) if target > 0 else 0
+        
+        await message.answer(
+            f"✅ Внесення оновлено!\n\n"
+            f"🎯 Ціль: {goal_name}\n"
+            f"💰 Накопичено: {format_currency(new_amount, currency)}\n"
+            f"📊 Прогрес: {pct:.1f}%\n"
+            f"{create_progress_bar(pct)}",
+            reply_markup=get_goals_menu()
+        )
+        await state.clear()
+        
+    except Exception as e:
+        logger.error(f"Error updating goal progress: {e}", exc_info=True)
+        await message.reply("❌ Не вдалося оновити внесення.")
 
 
 # ==================== ВИДАЛЕННЯ ЦІЛЕЙ ====================

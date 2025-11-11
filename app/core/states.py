@@ -53,4 +53,5 @@ class BudgetGoalState(StatesGroup):
     edit_goal_name = State()
     edit_goal_amount = State()
     edit_goal_deadline = State()
+    edit_goal_progress = State()
     delete_goal_confirmation = State()
