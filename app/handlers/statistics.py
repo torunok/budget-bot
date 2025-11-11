@@ -21,6 +21,7 @@ from app.services.chart_service import chart_service
 from app.keyboards.inline import get_stats_period_keyboard, get_transaction_edit_keyboard
 from app.utils.formatters import format_statistics, format_currency, format_date
 from app.utils.helpers import filter_transactions_by_period
+from app.utils.validators import validate_amount
 
 logger = logging.getLogger(__name__)
 router = Router()
