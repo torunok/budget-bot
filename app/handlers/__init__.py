@@ -14,6 +14,7 @@ from .subscriptions import router as subscriptions_router
 from .settings import router as settings_router
 from .support import router as support_router
 from .ai_analysis import router as ai_analysis_router
+from .goals import router as goals_router
 
 
 # 🔥 ВИПРАВЛЕНО 🔥: Тепер функція приймає об'єкт logger для коректного виведення інформації.
@@ -27,6 +28,7 @@ def register_all_handlers(dp: Dispatcher, logger: logging.Logger):
         transactions_router,
         statistics_router,
         subscriptions_router,
+        goals_router,
         ai_analysis_router,
         settings_router,
         support_router,

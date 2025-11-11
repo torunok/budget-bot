@@ -7,6 +7,8 @@
 
 import logging
 from datetime import datetime, timedelta
+from typing import Dict, List, Optional
+
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -267,6 +269,87 @@ def create_progress_bar(percentage: float, length: int = 10) -> str:
     return "🟩" * filled + "⬜" * empty
 
 
+def is_goal_completed(goal: Dict) -> bool:
+    """Повертає True, якщо ціль позначена виконаною"""
+    value = goal.get('completed', False)
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"true", "1", "yes", "y", "completed"}
+
+
+def get_goal_amounts(goal: Dict) -> tuple:
+    """Повертає (target, current, remaining, percentage)"""
+    target = float(goal.get('target_amount', 0) or 0)
+    current = float(goal.get('current_amount', 0) or 0)
+    remaining = max(target - current, 0)
+    percentage = (current / target * 100) if target > 0 else 0
+    return target, current, remaining, percentage
+
+
+def parse_goal_deadline(goal: Dict) -> Optional[datetime]:
+    """Парсить дедлайн цілі"""
+    deadline = goal.get('deadline')
+    if not deadline or deadline in {"Без дедлайну", "-"}:
+        return None
+    try:
+        return datetime.strptime(deadline, "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return None
+
+
+def format_deadline_hint(goal: Dict) -> str:
+    """Формує текст про дедлайн"""
+    deadline = parse_goal_deadline(goal)
+    if not deadline:
+        return "⏰ Без дедлайну"
+    days_left = (deadline - datetime.now()).days
+    if days_left > 1:
+        return f"⏰ До дедлайну: {days_left} дн."
+    if days_left == 1:
+        return "⏰ Залишився 1 день!"
+    if days_left == 0:
+        return "⏰ Дедлайн сьогодні!"
+    return "⏰ Дедлайн прострочено"
+
+
+def goal_deadline_sort_key(goal: Dict) -> datetime:
+    """Ключ сортування по дедлайну"""
+    deadline = parse_goal_deadline(goal)
+    return deadline or datetime.max
+
+
+def build_goal_details_text(goal: Dict, currency: str = "UAH") -> str:
+    """Формує опис цілі для редагування"""
+    target, current, remaining, percentage = get_goal_amounts(goal)
+    status = "✅ Досягнуто" if is_goal_completed(goal) else "🔄 В процесі"
+    lines = [
+        f"✏️ <b>Редагування: {goal.get('goal_name', 'Без назви')}</b>\n",
+        f"Статус: {status}",
+        f"Прогрес: {format_currency(current, currency)} / {format_currency(target, currency)} ({percentage:.1f}%)",
+        f"Залишилось: {format_currency(remaining, currency)}",
+        f"{format_deadline_hint(goal)}"
+    ]
+    return "\n".join(lines)
+
+
+def get_goal_action_keyboard(goal: Dict) -> InlineKeyboardMarkup:
+    """Клавіатура дій над окремою ціллю"""
+    toggle_text = "✅ Позначити виконаною" if not is_goal_completed(goal) else "🔄 Повернути в роботу"
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✏️ Назва", callback_data="goal_action_rename"),
+            InlineKeyboardButton(text="💰 Сума", callback_data="goal_action_amount")
+        ],
+        [
+            InlineKeyboardButton(text="📅 Дедлайн", callback_data="goal_action_deadline"),
+            InlineKeyboardButton(text=toggle_text, callback_data="goal_action_toggle")
+        ],
+        [
+            InlineKeyboardButton(text="⬅️ До списку", callback_data="edit_goals")
+        ]
+    ])
+
+
 # ==================== ВНЕСОК ДО ЦІЛІ ====================
 
 @router.callback_query(F.data == "contribute_to_goal")
@@ -339,11 +422,11 @@ async def contribute_amount_request(callback: CallbackQuery, state: FSMContext):
         f"Введи суму:"
     )
     
-    await state.set_state(BudgetGoalState.view_progress)
+    await state.set_state(BudgetGoalState.awaiting_contribution)
     await callback.answer()
 
 
-@router.message(BudgetGoalState.view_progress)
+@router.message(BudgetGoalState.awaiting_contribution)
 async def process_contribution(message: Message, state: FSMContext):
     """Обробка внеску"""
     is_valid, amount, error = validate_amount(message.text)
@@ -413,6 +496,492 @@ async def process_contribution(message: Message, state: FSMContext):
     except Exception as e:
         logger.error(f"Error processing contribution: {e}", exc_info=True)
         await message.reply("❌ Помилка при внеску")
+
+
+# ==================== ПРОГРЕС ЦІЛЕЙ ====================
+
+@router.callback_query(F.data == "goals_progress")
+async def show_goals_progress(callback: CallbackQuery):
+    """Показує зведення по цілях"""
+    nickname = callback.from_user.username or "anonymous"
+    
+    try:
+        goals = sheets_service.get_goals(nickname)
+        _, currency = sheets_service.get_current_balance(nickname)
+        currency = currency or "UAH"
+        
+        if not goals:
+            await callback.message.edit_text(
+                "🎯 Поки що немає жодної цілі.\n\n"
+                "Створи першу, щоб побачити прогрес!",
+                reply_markup=get_goals_menu()
+            )
+            await callback.answer()
+            return
+        
+        active_goals = [g for g in goals if not is_goal_completed(g)]
+        completed_count = len(goals) - len(active_goals)
+        
+        total_target = sum(get_goal_amounts(g)[0] for g in goals)
+        total_saved = sum(get_goal_amounts(g)[1] for g in goals)
+        avg_progress = (total_saved / total_target * 100) if total_target > 0 else 0
+        
+        text_lines = [
+            "📈 <b>Прогрес по цілях</b>\n",
+            f"🎯 Всього цілей: {len(goals)} (активних: {len(active_goals)}, завершених: {completed_count})",
+            f"💰 Накопичено: {format_currency(total_saved, currency)} / {format_currency(total_target, currency)}",
+            f"🚀 Середній прогрес: {avg_progress:.1f}%"
+        ]
+        
+        if active_goals:
+            sorted_goals = sorted(active_goals, key=goal_deadline_sort_key)
+            text_lines.append("\n<b>Найближчі цілі:</b>")
+            for goal in sorted_goals[:3]:
+                name = goal.get('goal_name', 'Без назви')
+                target, current, remaining, percentage = get_goal_amounts(goal)
+                text_lines.append(
+                    f"\n<b>{name}</b>\n"
+                    f"   {create_progress_bar(percentage)} {percentage:.1f}%\n"
+                    f"   Залишилось: {format_currency(remaining, currency)}\n"
+                    f"   {format_deadline_hint(goal)}"
+                )
+            
+            # Рекомендація для найближчої цілі
+            first_goal = sorted_goals[0]
+            deadline = parse_goal_deadline(first_goal)
+            if deadline:
+                _, _, remaining, _ = get_goal_amounts(first_goal)
+                days_left = max((deadline - datetime.now()).days, 1)
+                daily_need = remaining / days_left if remaining > 0 else 0
+                text_lines.append(
+                    f"\n💡 Щоб встигнути з ціллю <b>{first_goal.get('goal_name')}</b>, "
+                    f"відкладай приблизно {format_currency(daily_need, currency)} щодня."
+                )
+        
+        await callback.message.edit_text(
+            "\n".join(text_lines),
+            reply_markup=get_goals_menu()
+        )
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"Error showing goals progress: {e}", exc_info=True)
+        await callback.answer("❌ Помилка", show_alert=True)
+
+
+# ==================== РЕДАГУВАННЯ ЦІЛЕЙ ====================
+
+@router.callback_query(F.data == "edit_goals")
+async def edit_goals(callback: CallbackQuery, state: FSMContext):
+    """Меню вибору цілі для редагування"""
+    nickname = callback.from_user.username or "anonymous"
+    
+    try:
+        goals = sheets_service.get_goals(nickname)
+        _, currency = sheets_service.get_current_balance(nickname)
+        currency = currency or "UAH"
+        
+        if not goals:
+            await callback.message.edit_text(
+                "❌ Немає цілей для редагування.",
+                reply_markup=get_goals_menu()
+            )
+            await callback.answer()
+            return
+        
+        buttons = []
+        for idx, goal in enumerate(goals):
+            _, current, _, percentage = get_goal_amounts(goal)
+            status = "✅" if is_goal_completed(goal) else f"{percentage:.0f}%"
+            buttons.append([
+                InlineKeyboardButton(
+                    text=f"{idx + 1}. {goal.get('goal_name', 'Без назви')} ({status})",
+                    callback_data=f"goal_edit_{idx}"
+                )
+            ])
+        
+        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_goals")])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        
+        await state.update_data(goals_cache=goals, user_currency=currency)
+        await callback.message.edit_text(
+            "✏️ <b>Вибери ціль для редагування</b>:",
+            reply_markup=keyboard
+        )
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"Error showing edit goals menu: {e}", exc_info=True)
+        await callback.answer("❌ Помилка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("goal_edit_"))
+async def select_goal_for_edit(callback: CallbackQuery, state: FSMContext):
+    """Показує дії для конкретної цілі"""
+    idx = int(callback.data.split("_")[2])
+    data = await state.get_data()
+    goals: List[Dict] = data.get('goals_cache', [])
+    currency = data.get('user_currency', 'UAH')
+    
+    if idx >= len(goals):
+        await callback.answer("❌ Ціль не знайдено", show_alert=True)
+        return
+    
+    goal = goals[idx]
+    await state.update_data(selected_goal=goal, selected_goal_name=goal.get('goal_name'))
+    
+    await callback.message.edit_text(
+        build_goal_details_text(goal, currency),
+        reply_markup=get_goal_action_keyboard(goal)
+    )
+    await callback.answer()
+
+
+def ensure_goal_selected(data: Dict) -> Optional[str]:
+    """Перевіряє, чи обрана ціль у стані"""
+    goal_name = data.get('selected_goal_name')
+    return goal_name
+
+
+@router.callback_query(F.data == "goal_action_rename")
+async def goal_action_rename(callback: CallbackQuery, state: FSMContext):
+    """Запит на зміну назви"""
+    data = await state.get_data()
+    goal_name = ensure_goal_selected(data)
+    
+    if not goal_name:
+        await callback.answer("Спочатку обери ціль", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        f"✏️ <b>Зміна назви цілі</b>\n\n"
+        f"Поточна назва: {goal_name}\n"
+        f"Введи нову назву (до 100 символів):"
+    )
+    await state.set_state(BudgetGoalState.edit_goal_name)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "goal_action_amount")
+async def goal_action_amount(callback: CallbackQuery, state: FSMContext):
+    """Запит на зміну суми"""
+    data = await state.get_data()
+    goal_name = ensure_goal_selected(data)
+    currency = data.get('user_currency', 'UAH')
+    
+    if not goal_name:
+        await callback.answer("Спочатку обери ціль", show_alert=True)
+        return
+    
+    goal = data.get('selected_goal', {})
+    _, current, _, _ = get_goal_amounts(goal)
+    
+    await callback.message.edit_text(
+        f"💰 <b>Нова цільова сума</b>\n\n"
+        f"Ціль: {goal_name}\n"
+        f"Вже зібрано: {format_currency(current, currency)}\n\n"
+        f"Введи нову суму (не менше поточної):"
+    )
+    await state.set_state(BudgetGoalState.edit_goal_amount)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "goal_action_deadline")
+async def goal_action_deadline(callback: CallbackQuery, state: FSMContext):
+    """Запит на зміну дедлайну"""
+    data = await state.get_data()
+    goal_name = ensure_goal_selected(data)
+    
+    if not goal_name:
+        await callback.answer("Спочатку обери ціль", show_alert=True)
+        return
+    
+    await callback.message.edit_text(
+        f"📅 <b>Новий дедлайн для '{goal_name}'</b>\n\n"
+        f"Введи дату у форматі <code>день-місяць-рік</code>\n"
+        f"Наприклад: <code>31-12-2025</code>\n"
+        f"Щоб прибрати дедлайн, надішли <code>-</code>"
+    )
+    await state.set_state(BudgetGoalState.edit_goal_deadline)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "goal_action_toggle")
+async def goal_action_toggle(callback: CallbackQuery, state: FSMContext):
+    """Позначає/знімає виконання цілі"""
+    data = await state.get_data()
+    goal = data.get('selected_goal')
+    goal_name = ensure_goal_selected(data)
+    currency = data.get('user_currency', 'UAH')
+    
+    if not goal or not goal_name:
+        await callback.answer("Спочатку обери ціль", show_alert=True)
+        return
+    
+    nickname = callback.from_user.username or "anonymous"
+    new_status = not is_goal_completed(goal)
+    
+    try:
+        sheets_service.update_goal_details(
+            nickname=nickname,
+            goal_name=goal_name,
+            completed=new_status
+        )
+        goal['completed'] = new_status  # Оновлюємо кеш
+        
+        await callback.message.edit_text(
+            build_goal_details_text(goal, currency),
+            reply_markup=get_goal_action_keyboard(goal)
+        )
+        status_text = "Ціль виконана! 🎉" if new_status else "Ціль повернена в роботу."
+        await callback.answer(status_text, show_alert=True if new_status else False)
+        
+    except Exception as e:
+        logger.error(f"Error toggling goal status: {e}", exc_info=True)
+        await callback.answer("❌ Не вдалося оновити статус", show_alert=True)
+
+
+@router.message(BudgetGoalState.edit_goal_name)
+async def process_goal_rename(message: Message, state: FSMContext):
+    """Обробляє нову назву"""
+    new_name = message.text.strip()
+    data = await state.get_data()
+    old_name = data.get('selected_goal_name')
+    nickname = message.from_user.username or "anonymous"
+    
+    if not old_name:
+        await message.reply("Спочатку обери ціль у меню редагування.")
+        await state.clear()
+        return
+    
+    if not new_name:
+        await message.reply("❌ Назва не може бути порожньою.")
+        return
+    
+    if len(new_name) > 100:
+        await message.reply("❌ Назва занадто довга. Максимум 100 символів.")
+        return
+    
+    try:
+        # Перевіряємо на дублікати
+        existing = sheets_service.get_goals(nickname)
+        if any(g.get('goal_name') == new_name for g in existing):
+            await message.reply("❌ Ціль з такою назвою вже існує.")
+            return
+        
+        sheets_service.update_goal_details(
+            nickname=nickname,
+            goal_name=old_name,
+            new_name=new_name
+        )
+        
+        await message.answer(
+            f"✅ Назву змінено на <b>{new_name}</b>.",
+            reply_markup=get_goals_menu()
+        )
+        await state.clear()
+        
+    except Exception as e:
+        logger.error(f"Error renaming goal: {e}", exc_info=True)
+        await message.reply("❌ Не вдалося змінити назву.")
+
+
+@router.message(BudgetGoalState.edit_goal_amount)
+async def process_goal_amount_edit(message: Message, state: FSMContext):
+    """Обробляє нову суму цілі"""
+    is_valid, amount, error = validate_amount(message.text)
+    data = await state.get_data()
+    goal = data.get('selected_goal')
+    goal_name = data.get('selected_goal_name')
+    currency = data.get('user_currency', 'UAH')
+    nickname = message.from_user.username or "anonymous"
+    
+    if not goal or not goal_name:
+        await message.reply("Спочатку обери ціль у меню редагування.")
+        await state.clear()
+        return
+    
+    if not is_valid or not amount:
+        await message.reply(f"❌ {error or 'Некоректна сума'}")
+        return
+    
+    _, current, _, _ = get_goal_amounts(goal)
+    if amount < current:
+        await message.reply("❌ Нова сума не може бути меншою за вже накопичену.")
+        return
+    
+    try:
+        sheets_service.update_goal_details(
+            nickname=nickname,
+            goal_name=goal_name,
+            target_amount=amount
+        )
+        await message.answer(
+            f"✅ Нова цільова сума: {format_currency(amount, currency)}",
+            reply_markup=get_goals_menu()
+        )
+        await state.clear()
+        
+    except Exception as e:
+        logger.error(f"Error updating goal amount: {e}", exc_info=True)
+        await message.reply("❌ Не вдалося оновити суму.")
+
+
+@router.message(BudgetGoalState.edit_goal_deadline)
+async def process_goal_deadline_edit(message: Message, state: FSMContext):
+    """Обробляє новий дедлайн"""
+    deadline_str = message.text.strip()
+    data = await state.get_data()
+    goal_name = data.get('selected_goal_name')
+    nickname = message.from_user.username or "anonymous"
+    
+    if not goal_name:
+        await message.reply("Спочатку обери ціль у меню редагування.")
+        await state.clear()
+        return
+    
+    if deadline_str == "-":
+        new_deadline = "Без дедлайну"
+    else:
+        is_valid, date_obj, error = validate_date(deadline_str)
+        
+        if not is_valid or not date_obj:
+            await message.reply(f"❌ {error}")
+            return
+        
+        if date_obj.date() < datetime.now().date():
+            await message.reply("❌ Дата не може бути в минулому.")
+            return
+        
+        new_deadline = date_obj.strftime("%Y-%m-%d")
+    
+    try:
+        sheets_service.update_goal_details(
+            nickname=nickname,
+            goal_name=goal_name,
+            deadline=new_deadline
+        )
+        human_deadline = new_deadline if new_deadline != "Без дедлайну" else "без дедлайну"
+        await message.answer(
+            f"✅ Дедлайн оновлено: {human_deadline}",
+            reply_markup=get_goals_menu()
+        )
+        await state.clear()
+        
+    except Exception as e:
+        logger.error(f"Error updating goal deadline: {e}", exc_info=True)
+        await message.reply("❌ Не вдалося оновити дедлайн.")
+
+
+# ==================== ВИДАЛЕННЯ ЦІЛЕЙ ====================
+
+@router.callback_query(F.data == "delete_goals")
+async def delete_goals_menu(callback: CallbackQuery, state: FSMContext):
+    """Показує цілі для видалення"""
+    nickname = callback.from_user.username or "anonymous"
+    
+    try:
+        goals = sheets_service.get_goals(nickname)
+        
+        if not goals:
+            await callback.message.edit_text(
+                "🗑️ Немає цілей для видалення.",
+                reply_markup=get_goals_menu()
+            )
+            await callback.answer()
+            return
+        
+        buttons = []
+        for idx, goal in enumerate(goals):
+            buttons.append([
+                InlineKeyboardButton(
+                    text=f"{idx + 1}. {goal.get('goal_name', 'Без назви')}",
+                    callback_data=f"goal_delete_{idx}"
+                )
+            ])
+        
+        buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_goals")])
+        keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
+        
+        await state.update_data(goals_cache=goals)
+        await callback.message.edit_text(
+            "🗑️ <b>Оберіть ціль для видалення</b>:",
+            reply_markup=keyboard
+        )
+        await callback.answer()
+        
+    except Exception as e:
+        logger.error(f"Error showing delete goals menu: {e}", exc_info=True)
+        await callback.answer("❌ Помилка", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("goal_delete_"))
+async def confirm_goal_delete(callback: CallbackQuery, state: FSMContext):
+    """Підтвердження видалення цілі"""
+    idx = int(callback.data.split("_")[2])
+    data = await state.get_data()
+    goals: List[Dict] = data.get('goals_cache', [])
+    
+    if idx >= len(goals):
+        await callback.answer("❌ Ціль не знайдено", show_alert=True)
+        return
+    
+    goal = goals[idx]
+    goal_name = goal.get('goal_name', 'Без назви')
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Видалити", callback_data="goal_delete_confirm"),
+            InlineKeyboardButton(text="❌ Скасувати", callback_data="goal_delete_cancel")
+        ]
+    ])
+    
+    await state.update_data(goal_to_delete=goal_name)
+    await state.set_state(BudgetGoalState.delete_goal_confirmation)
+    
+    await callback.message.edit_text(
+        f"🗑️ <b>Видалити ціль?</b>\n\n"
+        f"Ціль: {goal_name}\n"
+        f"Цю дію не можна скасувати.",
+        reply_markup=keyboard
+    )
+    await callback.answer()
+
+
+@router.callback_query(BudgetGoalState.delete_goal_confirmation, F.data == "goal_delete_confirm")
+async def process_goal_delete(callback: CallbackQuery, state: FSMContext):
+    """Видаляє ціль"""
+    data = await state.get_data()
+    goal_name = data.get('goal_to_delete')
+    nickname = callback.from_user.username or "anonymous"
+    
+    if not goal_name:
+        await callback.answer("Ціль не вибрано", show_alert=True)
+        return
+    
+    try:
+        sheets_service.delete_goal(nickname, goal_name)
+        await callback.message.edit_text(
+            f"✅ Ціль <b>{goal_name}</b> видалена.",
+            reply_markup=get_goals_menu()
+        )
+        await state.clear()
+        await callback.answer("Видалено")
+        
+    except Exception as e:
+        logger.error(f"Error deleting goal: {e}", exc_info=True)
+        await callback.answer("❌ Не вдалося видалити ціль", show_alert=True)
+
+
+@router.callback_query(BudgetGoalState.delete_goal_confirmation, F.data == "goal_delete_cancel")
+async def cancel_goal_delete(callback: CallbackQuery, state: FSMContext):
+    """Скасовує видалення"""
+    await state.clear()
+    await callback.message.edit_text(
+        "Операцію скасовано.",
+        reply_markup=get_goals_menu()
+    )
+    await callback.answer()
 
 
 # ==================== НАЗАД ====================

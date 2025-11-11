@@ -259,6 +259,14 @@ class SheetsService:
             ])
             return ws
 
+    def _find_goal_row(self, ws, nickname: str, goal_name: str) -> int:
+        """Повертає індекс рядка з потрібною ціллю"""
+        all_values = ws.get_all_values()
+        for idx, row in enumerate(all_values[1:], start=2):
+            if len(row) >= 2 and row[0] == nickname and row[1] == goal_name:
+                return idx
+        raise ValueError(f"Goal '{goal_name}' for '{nickname}' not found")
+
     def get_goals(self, nickname: str) -> List[Dict]:
         """Отримує всі цілі користувача"""
         ws = self.get_goals_worksheet()
@@ -301,12 +309,7 @@ class SheetsService:
         ws = self.get_goals_worksheet()
         
         try:
-            cell = ws.find(goal_name)
-            if not cell:
-                raise ValueError(f"Goal {goal_name} not found")
-            
-            row_index = cell.row
-            
+            row_index = self._find_goal_row(ws, nickname, goal_name)
             ws.update_cell(row_index, 4, new_amount)
             ws.update_cell(row_index, 6, completed)
             
@@ -316,15 +319,50 @@ class SheetsService:
             logger.error(f"Error updating goal: {e}")
             raise
 
+    def update_goal_details(
+        self,
+        nickname: str,
+        goal_name: str,
+        new_name: Optional[str] = None,
+        target_amount: Optional[float] = None,
+        deadline: Optional[str] = None,
+        completed: Optional[bool] = None
+    ):
+        """Оновлює деталі цілі"""
+        ws = self.get_goals_worksheet()
+        
+        try:
+            row_index = self._find_goal_row(ws, nickname, goal_name)
+            updates = []
+            
+            if new_name is not None:
+                updates.append((row_index, 2, new_name))
+            if target_amount is not None:
+                updates.append((row_index, 3, target_amount))
+            if deadline is not None:
+                updates.append((row_index, 5, deadline or "Без дедлайну"))
+            if completed is not None:
+                updates.append((row_index, 6, completed))
+            
+            for row, col, value in updates:
+                ws.update_cell(row, col, value)
+            
+            logger.info(
+                f"Goal details updated for {goal_name}: "
+                f"name={new_name}, target={target_amount}, deadline={deadline}, completed={completed}"
+            )
+        except Exception as e:
+            logger.error(f"Error updating goal details: {e}")
+            raise
+
     def delete_goal(self, nickname: str, goal_name: str):
         """Видаляє ціль"""
         ws = self.get_goals_worksheet()
         
         try:
-            cell = ws.find(goal_name)
-            if cell:
-                ws.delete_rows(cell.row)
-                logger.info(f"Goal deleted: {goal_name}")
+            row_index = self._find_goal_row(ws, nickname, goal_name)
+            ws.delete_rows(row_index)
+            logger.info(f"Goal deleted: {goal_name}")
         except Exception as e:
             logger.error(f"Error deleting goal: {e}")
             raise
