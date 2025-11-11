@@ -50,7 +50,7 @@ async def show_goals_menu(message: Message):
     
     try:
         goals = sheets_service.get_goals(nickname)
-        active_goals = len([g for g in goals if not g.get('completed', False)])
+        active_goals = len([g for g in goals if not is_goal_completed(g)])
         
         text = (
             "🎯 <b>Цілі заощаджень</b>\n\n"
@@ -204,6 +204,8 @@ async def view_goals(callback: CallbackQuery):
     
     try:
         goals = sheets_service.get_goals(nickname)
+        _, currency = sheets_service.get_current_balance(nickname)
+        currency = currency or "UAH"
         
         if not goals:
             await callback.message.edit_text(
@@ -214,48 +216,13 @@ async def view_goals(callback: CallbackQuery):
             await callback.answer()
             return
         
-        text_lines = ["🎯 <b>Твої фінансові цілі:</b>\n"]
+        text_lines = ["🎯 <b>Твої фінансові цілі:</b>"]
         
-        for idx, goal in enumerate(goals, 1):
-            name = goal.get('goal_name', 'Без назви')
-            target = float(goal.get('target_amount', 0))
-            current = float(goal.get('current_amount', 0))
-            deadline = goal.get('deadline', 'Без дедлайну')
-            completed = goal.get('completed', False)
-            
-            # Прогрес
-            progress_pct = (current / target * 100) if target > 0 else 0
-            progress_bar = create_progress_bar(progress_pct)
-            
-            # Статус
-            status = "✅ Досягнуто!" if completed else "🔄 В процесі"
-            
-            # Дедлайн
-            deadline_text = ""
-            if deadline and deadline != "Без дедлайну":
-                try:
-                    deadline_date = datetime.strptime(deadline, "%Y-%m-%d")
-                    days_left = (deadline_date - datetime.now()).days
-                    if days_left > 0:
-                        deadline_text = f"\n   ⏰ {days_left} днів"
-                    elif days_left == 0:
-                        deadline_text = "\n   ⏰ Сьогодні!"
-                    else:
-                        deadline_text = "\n   ⏰ Прострочено"
-                except:
-                    pass
-            
-            deadline_display = human_goal_deadline(deadline)
-            text_lines.append(
-                f"\n<b>{idx}. {name}</b> {status}\n"
-                f"   💰 {format_currency(current)} / {format_currency(target)}\n"
-                f"   {progress_bar} {progress_pct:.1f}%\n"
-                f"   📅 Дедлайн: {deadline_display}"
-                f"{deadline_text}"
-            )
+        for goal in goals:
+            text_lines.append(format_goal_display(goal, currency))
         
         await callback.message.edit_text(
-            "\n".join(text_lines),
+            "\n\n".join(text_lines),
             reply_markup=get_goals_menu()
         )
         await callback.answer()
@@ -267,9 +234,11 @@ async def view_goals(callback: CallbackQuery):
 
 def create_progress_bar(percentage: float, length: int = 10) -> str:
     """Створює прогрес-бар"""
-    filled = int(percentage / 100 * length)
+    capped = max(0.0, min(percentage, 100.0))
+    filled = int(round(capped / 100 * length))
+    filled = min(length, filled)
     empty = length - filled
-    return "🟩" * filled + "⬜" * empty
+    return "▪️" * filled + "▫️" * empty
 
 
 def is_goal_completed(goal: Dict) -> bool:
@@ -328,6 +297,43 @@ def human_goal_deadline(deadline: Optional[str]) -> str:
     return format_date(deadline) or deadline
 
 
+def get_goal_days_left(goal: Dict) -> str:
+    """Повертає текст із залишком днів"""
+    deadline = parse_goal_deadline(goal)
+    if not deadline:
+        return "без дедлайну"
+    days_left = (deadline - datetime.now()).days
+    if days_left > 1:
+        return f"{days_left} днів"
+    if days_left == 1:
+        return "1 день"
+    if days_left == 0:
+        return "дедлайн сьогодні"
+    return "просрочено"
+
+
+def format_goal_display(goal: Dict, currency: str) -> str:
+    """Форматує відображення цілі у списку"""
+    name = goal.get('goal_name', 'Без назви')
+    target, current, _, percentage = get_goal_amounts(goal)
+    progress_bar = create_progress_bar(percentage)
+    days_left_text = get_goal_days_left(goal)
+    deadline_text = human_goal_deadline(goal.get('deadline'))
+    
+    lines = [
+        f"🎯 Ціль: {name}",
+        f"💰 Прогрес: {format_currency(current, currency)} / {format_currency(target, currency)} ({percentage:.0f}%)",
+        f"📊 Прогрес-бар: {progress_bar}",
+        f"⏰ Залишилось: {days_left_text}",
+        f"📅 Дедлайн: {deadline_text}"
+    ]
+    
+    if is_goal_completed(goal):
+        lines.append("✅ Ціль досягнуто!")
+    
+    return "\n".join(lines)
+
+
 def build_goal_details_text(goal: Dict, currency: str = "UAH") -> str:
     """Формує опис цілі для редагування"""
     target, current, remaining, percentage = get_goal_amounts(goal)
@@ -336,7 +342,9 @@ def build_goal_details_text(goal: Dict, currency: str = "UAH") -> str:
         f"✏️ <b>Редагування: {goal.get('goal_name', 'Без назви')}</b>\n",
         f"Статус: {status}",
         f"Прогрес: {format_currency(current, currency)} / {format_currency(target, currency)} ({percentage:.1f}%)",
-        f"Залишилось: {format_currency(remaining, currency)}",
+        f"📊 Бар: {create_progress_bar(percentage)}",
+        f"Залишилось накопичити: {format_currency(remaining, currency)}",
+        f"⏰ Залишилось часу: {get_goal_days_left(goal)}",
         f"Дедлайн: {human_goal_deadline(goal.get('deadline'))}",
         f"{format_deadline_hint(goal)}"
     ]
@@ -370,7 +378,7 @@ async def contribute_to_goal_start(callback: CallbackQuery, state: FSMContext):
     
     try:
         goals = sheets_service.get_goals(nickname)
-        active_goals = [g for g in goals if not g.get('completed', False)]
+        active_goals = [g for g in goals if not is_goal_completed(g)]
         
         if not active_goals:
             await callback.answer("Немає активних цілей", show_alert=True)
@@ -450,6 +458,8 @@ async def process_contribution(message: Message, state: FSMContext):
     goals = data.get('active_goals', [])
     goal_idx = data.get('selected_goal_idx', 0)
     nickname = message.from_user.username or "anonymous"
+    _, currency = sheets_service.get_current_balance(nickname)
+    currency = currency or "UAH"
     
     try:
         goal = goals[goal_idx]
@@ -483,7 +493,7 @@ async def process_contribution(message: Message, state: FSMContext):
             await message.answer(
                 f"🎉🎉🎉 <b>ВІТАЄМО!</b> 🎉🎉🎉\n\n"
                 f"Ти досяг цілі: <b>{goal_name}</b>\n"
-                f"💰 Накопичено: {format_currency(new_amount)}\n\n"
+                f"💰 Накопичено: {format_currency(new_amount, currency)}\n\n"
                 f"Продовжуй в тому ж дусі! 🚀"
             )
         else:
@@ -491,9 +501,9 @@ async def process_contribution(message: Message, state: FSMContext):
             await message.answer(
                 f"✅ <b>Внесок додано!</b>\n\n"
                 f"🎯 Ціль: {goal_name}\n"
-                f"💰 Додано: {format_currency(amount)}\n"
+                f"💰 Додано: {format_currency(amount, currency)}\n"
                 f"📊 Прогрес: {progress_pct:.1f}%\n"
-                f"📉 Залишилось: {format_currency(remaining)}\n\n"
+                f"📉 Залишилось: {format_currency(remaining, currency)}\n\n"
                 f"Так тримати! 💪"
             )
         

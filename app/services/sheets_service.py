@@ -6,6 +6,7 @@
 """
 
 import logging
+import re
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 from collections import defaultdict
@@ -250,9 +251,15 @@ class SheetsService:
         user_ids = ws.col_values(1)[1:]  # Skip header
         return [int(uid) for uid in user_ids if uid]
 
-    def get_goals_worksheet(self):
-        """Отримує або створює аркуш цілей"""
-        worksheet_title = "user_goals"
+    def _goal_sheet_title(self, nickname: str) -> str:
+        """Формує безпечну назву аркуша для цілей користувача"""
+        base = nickname or "anonymous"
+        safe = re.sub(r'[^A-Za-z0-9 _-]', '_', base)[:80]
+        return f"{safe}_goals"
+
+    def get_goals_worksheet(self, nickname: str):
+        """Отримує або створює аркуш цілей користувача"""
+        worksheet_title = self._goal_sheet_title(nickname)
         try:
             return self.spreadsheet.worksheet(worksheet_title)
         except WorksheetNotFound:
@@ -271,11 +278,80 @@ class SheetsService:
                 return idx
         raise ValueError(f"Goal '{goal_name}' for '{nickname}' not found")
 
+    def _migrate_legacy_goals(self, nickname: str) -> List[Dict]:
+        """Мігрує цілі з застарілого аркуша user_goals у персональний"""
+        try:
+            legacy_ws = self.spreadsheet.worksheet("user_goals")
+        except WorksheetNotFound:
+            return []
+        
+        values = legacy_ws.get_all_values()
+        if len(values) < 2:
+            return []
+        
+        headers = values[0]
+        rows_to_delete = []
+        records = []
+        
+        for idx, row in enumerate(values[1:], start=2):
+            if row and row[0] == nickname:
+                record = {}
+                for col_idx, header in enumerate(headers):
+                    record[header] = row[col_idx] if col_idx < len(row) else ""
+                records.append(record)
+                rows_to_delete.append(idx)
+        
+        if not records:
+            return []
+        
+        target_ws = self.get_goals_worksheet(nickname)
+        
+        def _to_float(value):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                try:
+                    return float(str(value).replace(",", "."))
+                except (TypeError, ValueError):
+                    return 0.0
+        
+        for record in records:
+            target_amount = _to_float(record.get('target_amount'))
+            current_amount = _to_float(record.get('current_amount'))
+            deadline = record.get('deadline') or "Без дедлайну"
+            completed = record.get('completed', False)
+            if isinstance(completed, str):
+                completed = completed.strip().lower() in {"true", "1", "yes"}
+            elif not isinstance(completed, bool):
+                completed = bool(completed)
+            created_date = record.get('created_date') or datetime.now().strftime("%Y-%m-%d")
+            
+            target_ws.append_row([
+                nickname,
+                record.get('goal_name', 'Без назви'),
+                target_amount,
+                current_amount,
+                deadline,
+                completed,
+                created_date
+            ])
+        
+        for row_idx in sorted(rows_to_delete, reverse=True):
+            legacy_ws.delete_rows(row_idx)
+        
+        return target_ws.get_all_records()
+
     def get_goals(self, nickname: str) -> List[Dict]:
         """Отримує всі цілі користувача"""
-        ws = self.get_goals_worksheet()
+        ws = self.get_goals_worksheet(nickname)
         all_goals = ws.get_all_records()
-        return [g for g in all_goals if g.get('nickname') == nickname]
+        if not all_goals:
+            all_goals = self._migrate_legacy_goals(nickname)
+        for goal in all_goals:
+            value = goal.get('completed')
+            if isinstance(value, str):
+                goal['completed'] = value.strip().lower() in {"true", "1", "yes"}
+        return all_goals
 
     def add_goal(
         self, 
@@ -286,7 +362,7 @@ class SheetsService:
         current_amount: float = 0
     ):
         """Додає нову ціль"""
-        ws = self.get_goals_worksheet()
+        ws = self.get_goals_worksheet(nickname)
         created_date = datetime.now().strftime("%Y-%m-%d")
         
         row = [
@@ -310,7 +386,7 @@ class SheetsService:
         completed: bool = False
     ):
         """Оновлює прогрес цілі"""
-        ws = self.get_goals_worksheet()
+        ws = self.get_goals_worksheet(nickname)
         
         try:
             row_index = self._find_goal_row(ws, nickname, goal_name)
@@ -333,7 +409,7 @@ class SheetsService:
         completed: Optional[bool] = None
     ):
         """Оновлює деталі цілі"""
-        ws = self.get_goals_worksheet()
+        ws = self.get_goals_worksheet(nickname)
         
         try:
             row_index = self._find_goal_row(ws, nickname, goal_name)
@@ -361,7 +437,7 @@ class SheetsService:
 
     def delete_goal(self, nickname: str, goal_name: str):
         """Видаляє ціль"""
-        ws = self.get_goals_worksheet()
+        ws = self.get_goals_worksheet(nickname)
         
         try:
             row_index = self._find_goal_row(ws, nickname, goal_name)
