@@ -5,6 +5,7 @@
 Обробники для транзакцій (витрати/доходи) - ПОВНА ВЕРСІЯ
 """
 import logging
+from datetime import datetime, timedelta, timezone
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -19,6 +20,24 @@ from app.utils.formatters import format_currency, format_transaction_list
 logger = logging.getLogger(__name__)
 router = Router()
 
+TRANSACTION_INPUT_TIMEOUT = timedelta(minutes=1)
+
+
+def _new_input_deadline() -> str:
+    """Повертає ISO-рядок дедлайну для введення даних"""
+    return (datetime.now(timezone.utc) + TRANSACTION_INPUT_TIMEOUT).isoformat()
+
+
+def _is_input_timeout_expired(data: dict) -> bool:
+    """Перевіряє, чи минув час очікування введення"""
+    deadline = data.get('input_deadline')
+    if not deadline:
+        return False
+    try:
+        expires_at = datetime.fromisoformat(deadline)
+    except (TypeError, ValueError):
+        return False
+    return datetime.now(timezone.utc) >= expires_at
 
 # ==================== ДОДАВАННЯ ТРАНЗАКЦІЙ ====================
 
@@ -27,11 +46,12 @@ async def add_expense_handler(message: Message, state: FSMContext):
     """Початок додавання витрати"""
     await message.answer(
         "💸 Введи суму та призначення витрати:\n\n"
-        "Наприклад: <code>150 їжа супермаркет</code>\n"
-        "або просто: <code>150 їжа</code>",
+        "Наприклад: <code>150 Продукти Булочка</code>\n"
+        "або просто: <code>150 Продукти</code>",
         reply_markup=get_main_menu_keyboard()
     )
     await state.set_state(UserState.add_expense)
+    await state.update_data(input_deadline=_new_input_deadline())
 
 
 @router.message(F.text == "📈 Додати дохід")
@@ -44,6 +64,7 @@ async def add_income_handler(message: Message, state: FSMContext):
         reply_markup=get_main_menu_keyboard()
     )
     await state.set_state(UserState.add_income)
+    await state.update_data(input_deadline=_new_input_deadline())
 
 
 @router.message(UserState.add_expense)
@@ -52,13 +73,20 @@ async def process_transaction(message: Message, state: FSMContext):
     """Обробка введеної транзакції"""
     current_state = await state.get_state()
     is_expense = current_state == UserState.add_expense
+    state_data = await state.get_data()
+    if _is_input_timeout_expired(state_data):
+        await state.clear()
+        await message.reply(
+            "⏰ Час на введення минув. Відправ команду знову, щоб додати транзакцію."
+        )
+        return
     
     amount, note = parse_transaction_input(message.text)
     
     if amount is None:
         await message.reply(
             "❌ Некоректна сума. Спробуй ще раз:\n"
-            "Наприклад: <code>150 їжа</code>"
+            "Наприклад: <code>150 Продукти Булочка</code>"
         )
         return
     
@@ -88,7 +116,8 @@ async def process_transaction(message: Message, state: FSMContext):
             transaction_type="expense" if is_expense else "income",
             amount=amount,
             category=category,
-            note=note
+            note=note,
+            input_deadline=None
         )
         
         transaction_type = "витрата" if is_expense else "дохід"

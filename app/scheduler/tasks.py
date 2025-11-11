@@ -5,7 +5,7 @@
 """
 
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional
 from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -76,6 +76,7 @@ async def check_subscription_renewals(bot: Bot):
         ]
         
         today = datetime.now().date()
+        tomorrow = today + timedelta(days=1)
         notifications_sent = 0
         
         for nickname in worksheets:
@@ -96,18 +97,31 @@ async def check_subscription_renewals(bot: Bot):
                         if not due_date:
                             continue
                         
+                        notification_text = None
                         if due_date == today:
                             sub_name = sub.get('note', 'Підписка')
                             sub_amount = abs(float(sub.get('amount', 0)))
                             
-                            message = (
+                            notification_text = (
                                 f"🔔 <b>Нагадування про підписку</b>\n\n"
                                 f"Сьогодні має бути списання за: <b>{sub_name}</b>\n"
                                 f"Сума: <b>{sub_amount:.2f} UAH</b>\n\n"
                                 f"Чи продовжити підписку?"
                             )
+                        elif due_date == tomorrow:
+                            sub_name = sub.get('note', 'Підписка')
+                            sub_amount = abs(float(sub.get('amount', 0)))
+                            due_str = due_date.strftime("%d.%m.%Y")
                             
-                            await bot.send_message(chat_id=user_id, text=message)
+                            notification_text = (
+                                f"⏰ <b>Підписка завтра</b>\n\n"
+                                f"Вже завтра ({due_str}) буде списання за: <b>{sub_name}</b>\n"
+                                f"Сума: <b>{sub_amount:.2f} UAH</b>\n\n"
+                                f"Переконайся, що кошти на рахунку!"
+                            )
+                        
+                        if notification_text:
+                            await bot.send_message(chat_id=user_id, text=notification_text)
                             notifications_sent += 1
                             
                     except (ValueError, TypeError) as e:
@@ -205,7 +219,7 @@ def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
     # Перевірка підписок щодня о 9:00
     scheduler.add_job(
         check_subscription_renewals,
-        trigger=CronTrigger(hour=9, minute=0),
+        trigger=CronTrigger(hour=10, minute=0),
         kwargs={'bot': bot},
         id='subscription_check'
     )
