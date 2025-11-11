@@ -152,13 +152,14 @@ class SheetsService:
             
             # Конвертуємо в список словників
             transactions = []
-            for row in rows:
+            for row_idx, row in enumerate(rows, start=2):
                 transaction = {}
                 for col_idx, header in enumerate(headers):
                     if col_idx < len(row):
                         transaction[header] = row[col_idx]
                     else:
                         transaction[header] = None
+                transaction['_row'] = row_idx
                 transactions.append(transaction)
             
             logger.info(f"✅ Loaded {len(transactions)} transactions for {nickname}")
@@ -174,7 +175,10 @@ class SheetsService:
         except Exception as e:
             logger.error(f"❌ Error getting transactions: {e}", exc_info=True)
             # Fallback до старого методу
-            return ws.get_all_records()
+            records = ws.get_all_records()
+            for idx, record in enumerate(records, start=2):
+                record['_row'] = idx
+            return records
     
     def get_subscriptions(self, nickname: str) -> List[Dict]:
         """Отримує всі підписки користувача"""

@@ -17,7 +17,7 @@ from app.core.states import BudgetGoalState
 from app.services.sheets_service import sheets_service
 from app.keyboards.reply import get_main_menu_keyboard
 from app.utils.validators import validate_amount, validate_date
-from app.utils.formatters import format_currency
+from app.utils.formatters import format_currency, format_date
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -126,8 +126,8 @@ async def process_goal_amount(message: Message, state: FSMContext):
         f"🎯 <b>Ціль: {goal_name}</b>\n"
         f"💰 Сума: {format_currency(amount)}\n\n"
         f"Крок 3/3: До якої дати хочеш досягти?\n\n"
-        f"Введи дату у форматі <code>день-місяць-рік</code>\n"
-        f"Наприклад: <code>31-12-2025</code>\n\n"
+        f"Введи дату у форматі <code>день.місяць.рік</code>\n"
+        f"Наприклад: <code>31.12.2025</code>\n\n"
         f"Або відправ <code>-</code>, якщо дедлайн не важливий"
     )
     
@@ -175,11 +175,12 @@ async def process_goal_deadline(message: Message, state: FSMContext):
             days = (deadline_date - datetime.now()).days
             days_left = f"\n⏰ Залишилось днів: {days}"
         
+        human_deadline = human_goal_deadline(deadline)
         await message.answer(
             f"✅ <b>Ціль створена!</b>\n\n"
             f"🎯 Назва: {goal_name}\n"
             f"💰 Сума: {format_currency(goal_amount)}\n"
-            f"📅 Дедлайн: {deadline or 'без обмежень'}"
+            f"📅 Дедлайн: {human_deadline}"
             f"{days_left}\n\n"
             f"Тримайся плану і все вийде! 💪",
             reply_markup=get_main_menu_keyboard()
@@ -244,10 +245,12 @@ async def view_goals(callback: CallbackQuery):
                 except:
                     pass
             
+            deadline_display = human_goal_deadline(deadline)
             text_lines.append(
                 f"\n<b>{idx}. {name}</b> {status}\n"
                 f"   💰 {format_currency(current)} / {format_currency(target)}\n"
-                f"   {progress_bar} {progress_pct:.1f}%"
+                f"   {progress_bar} {progress_pct:.1f}%\n"
+                f"   📅 Дедлайн: {deadline_display}"
                 f"{deadline_text}"
             )
         
@@ -318,6 +321,13 @@ def goal_deadline_sort_key(goal: Dict) -> datetime:
     return deadline or datetime.max
 
 
+def human_goal_deadline(deadline: Optional[str]) -> str:
+    """Повертає людинозрозуміле значення дедлайну"""
+    if not deadline or deadline in {"Без дедлайну", "-", "без обмежень"}:
+        return "без обмежень"
+    return format_date(deadline) or deadline
+
+
 def build_goal_details_text(goal: Dict, currency: str = "UAH") -> str:
     """Формує опис цілі для редагування"""
     target, current, remaining, percentage = get_goal_amounts(goal)
@@ -327,6 +337,7 @@ def build_goal_details_text(goal: Dict, currency: str = "UAH") -> str:
         f"Статус: {status}",
         f"Прогрес: {format_currency(current, currency)} / {format_currency(target, currency)} ({percentage:.1f}%)",
         f"Залишилось: {format_currency(remaining, currency)}",
+        f"Дедлайн: {human_goal_deadline(goal.get('deadline'))}",
         f"{format_deadline_hint(goal)}"
     ]
     return "\n".join(lines)
@@ -543,6 +554,7 @@ async def show_goals_progress(callback: CallbackQuery):
                     f"\n<b>{name}</b>\n"
                     f"   {create_progress_bar(percentage)} {percentage:.1f}%\n"
                     f"   Залишилось: {format_currency(remaining, currency)}\n"
+                    f"   📅 До: {human_goal_deadline(goal.get('deadline'))}\n"
                     f"   {format_deadline_hint(goal)}"
                 )
             
@@ -698,8 +710,8 @@ async def goal_action_deadline(callback: CallbackQuery, state: FSMContext):
     
     await callback.message.edit_text(
         f"📅 <b>Новий дедлайн для '{goal_name}'</b>\n\n"
-        f"Введи дату у форматі <code>день-місяць-рік</code>\n"
-        f"Наприклад: <code>31-12-2025</code>\n"
+        f"Введи дату у форматі <code>день.місяць.рік</code>\n"
+        f"Наприклад: <code>31.12.2025</code>\n"
         f"Щоб прибрати дедлайн, надішли <code>-</code>"
     )
     await state.set_state(BudgetGoalState.edit_goal_deadline)
@@ -861,7 +873,7 @@ async def process_goal_deadline_edit(message: Message, state: FSMContext):
             goal_name=goal_name,
             deadline=new_deadline
         )
-        human_deadline = new_deadline if new_deadline != "Без дедлайну" else "без дедлайну"
+        human_deadline = human_goal_deadline(new_deadline)
         await message.answer(
             f"✅ Дедлайн оновлено: {human_deadline}",
             reply_markup=get_goals_menu()

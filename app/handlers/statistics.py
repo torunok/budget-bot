@@ -6,13 +6,20 @@
 """
 import logging
 from aiogram import Router, F
-from aiogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    BufferedInputFile,
+)
 from aiogram.fsm.context import FSMContext
 
 from app.core.states import UserState  # ← ДОДАНО!
 from app.services.sheets_service import sheets_service
-from app.keyboards.inline import get_stats_period_keyboard
-from app.utils.formatters import format_statistics, format_currency
+from app.services.chart_service import chart_service
+from app.keyboards.inline import get_stats_period_keyboard, get_transaction_edit_keyboard
+from app.utils.formatters import format_statistics, format_currency, format_date
 from app.utils.helpers import filter_transactions_by_period
 
 logger = logging.getLogger(__name__)
@@ -349,13 +356,13 @@ async def edit_transactions_menu(callback: CallbackQuery):
         
         buttons = []
         for idx, t in enumerate(recent):
-            date = t.get('date', '')[:10]
+            date = format_date(t.get('date')) or "—"
             amount = float(t.get('amount', 0))
             category = t.get('category', '')
-            note = t.get('note', '')[:20]
+            currency = t.get('currency') or "UAH"
             
             emoji = "📉" if amount < 0 else "📈"
-            text = f"{emoji} {date} | {abs(amount):.0f} | {category}"
+            text = f"{emoji} {date} | {format_currency(abs(amount), currency)} | {category}"
             
             buttons.append([
                 InlineKeyboardButton(
@@ -396,16 +403,37 @@ async def select_transaction_to_edit(callback: CallbackQuery, state: FSMContext)
             return
 
         transaction = recent[index]
-        await state.update_data(transaction=transaction)
-
-        await callback.message.edit_text(
-            "✏️ <b>Редагування транзакції</b>\n\n"
-            f"Дата: {transaction.get('date')}\n"
-            f"Сума: {transaction.get('amount')}\n"
-            f"Категорія: {transaction.get('category')}\n"
-            f"Примітка: {transaction.get('note')}\n\n"
-            "Введіть нові дані для транзакції:"
+        row_index = transaction.get('_row')
+        
+        if not row_index:
+            await callback.answer("Не вдалося визначити рядок транзакції", show_alert=True)
+            return
+        
+        amount = float(transaction.get('amount', 0) or 0)
+        category = transaction.get('category', 'Інше')
+        note = transaction.get('note', '')
+        currency = transaction.get('currency') or sheets_service.get_current_balance(nickname)[1]
+        formatted_date = format_date(transaction.get('date')) or "—"
+        
+        await state.update_data(
+            last_transaction_row=row_index,
+            amount=amount,
+            category=category,
+            note=note,
+            transaction_type="expense" if amount < 0 else "income"
         )
+
+        emoji = "📉" if amount < 0 else "📈"
+        await callback.message.edit_text(
+            f"{emoji} <b>Редагування транзакції</b>\n\n"
+            f"📅 Дата: {formatted_date}\n"
+            f"💰 Сума: {format_currency(abs(amount), currency)}\n"
+            f"📂 Категорія: {category}\n"
+            f"📝 Опис: {note or '—'}\n\n"
+            f"Що хочеш змінити?",
+            reply_markup=get_transaction_edit_keyboard()
+        )
+        await callback.answer()
 
     except Exception as e:
         logger.error(f"Error selecting transaction to edit: {e}", exc_info=True)

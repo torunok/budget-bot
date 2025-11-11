@@ -5,7 +5,8 @@
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, date
+from typing import Optional
 from aiogram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -42,6 +43,27 @@ async def send_daily_reminders(bot: Bot):
         logger.error(f"Error in daily reminders task: {e}", exc_info=True)
 
 
+def _parse_subscription_date(value: str) -> Optional[date]:
+    """Повертає дату підписки з різних форматів"""
+    if not value:
+        return None
+    
+    text = value.strip()
+    
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
+    except ValueError:
+        pass
+    
+    for fmt in ("%d.%m.%Y", "%d-%m-%Y"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    
+    return None
+
+
 async def check_subscription_renewals(bot: Bot):
     """Перевіряє підписки, що мають бути поновлені"""
     logger.info("📅 Running scheduled task: subscription renewals")
@@ -69,7 +91,10 @@ async def check_subscription_renewals(bot: Bot):
                 for sub in subscriptions:
                     try:
                         due_date_str = sub.get('date', '')
-                        due_date = datetime.strptime(due_date_str, "%d-%m-%Y").date()
+                        due_date = _parse_subscription_date(due_date_str)
+                        
+                        if not due_date:
+                            continue
                         
                         if due_date == today:
                             sub_name = sub.get('note', 'Підписка')

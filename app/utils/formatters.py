@@ -6,8 +6,10 @@
 """
 
 from datetime import datetime
-from typing import List, Dict
+from typing import List, Dict, Optional
 from collections import defaultdict
+
+DISPLAY_DATE_FORMAT = "%d.%m.%Y"
 
 
 def format_currency(amount: float, currency: str = "UAH") -> str:
@@ -15,13 +17,34 @@ def format_currency(amount: float, currency: str = "UAH") -> str:
     return f"{amount:,.2f} {currency}".replace(",", " ")
 
 
-def format_date(date_str: str, format: str = "%d.%m.%Y %H:%M") -> str:
-    """Форматує дату"""
-    try:
-        dt = datetime.fromisoformat(date_str)
-        return dt.strftime(format)
-    except:
-        return date_str
+def format_date(date_value: Optional[str], date_format: str = DISPLAY_DATE_FORMAT) -> str:
+    """Форматує дату в стандартному форматі бота"""
+    if not date_value:
+        return ""
+    
+    if isinstance(date_value, datetime):
+        dt = date_value
+    else:
+        raw = str(date_value).strip()
+        if not raw:
+            return ""
+        
+        dt = None
+        # ISO 8601 / Google Sheets timestamp
+        try:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            # Підтримуємо крапки та дефіси у введенні
+            for fmt in ("%d.%m.%Y", "%d-%m-%Y"):
+                try:
+                    dt = datetime.strptime(raw, fmt)
+                    break
+                except ValueError:
+                    continue
+            if dt is None:
+                return raw
+    
+    return dt.strftime(date_format)
 
 
 def format_transaction_list(transactions: List[Dict], limit: int = 10) -> str:
@@ -31,13 +54,14 @@ def format_transaction_list(transactions: List[Dict], limit: int = 10) -> str:
     
     lines = []
     for t in transactions[:limit]:
-        date = format_date(t.get('date', ''), "%d.%m %H:%M")
+        date = format_date(t.get('date', ''), DISPLAY_DATE_FORMAT) or "—"
         amount = float(t.get('amount', 0))
         category = t.get('category', 'Інше')
         note = t.get('note', '')
         
         emoji = "📉" if amount < 0 else "📈"
-        lines.append(f"{emoji} {date} | {format_currency(abs(amount))} | {category}")
+        currency = t.get('currency') or "UAH"
+        lines.append(f"{emoji} {date} | {format_currency(abs(amount), currency)} | {category}")
         if note:
             lines.append(f"   ↳ {note[:50]}")
     

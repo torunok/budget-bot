@@ -9,6 +9,8 @@ import re
 from datetime import datetime
 from typing import Tuple, Optional
 
+DATE_INPUT_FORMATS = ("%d.%m.%Y", "%d-%m-%Y")
+
 
 def validate_amount(text: str) -> Tuple[bool, Optional[float], str]:
     """Валідує суму транзакції"""
@@ -28,15 +30,21 @@ def validate_amount(text: str) -> Tuple[bool, Optional[float], str]:
         return False, None, "Некоректна сума. Введіть число (наприклад: 150 або 150.50)"
 
 
-def validate_date(date_str: str, date_format: str = "%d-%m-%Y") -> Tuple[bool, Optional[datetime], str]:
-    """Валідує дату"""
-    try:
-        date_obj = datetime.strptime(date_str.strip(), date_format)
-        if date_obj.year < 2000 or date_obj.year > 2100:
-            return False, None, "Некоректний рік"
-        return True, date_obj, ""
-    except ValueError:
-        return False, None, f"Некоректний формат дати. Використовуйте: {date_format}"
+def validate_date(date_str: str, date_formats = DATE_INPUT_FORMATS) -> Tuple[bool, Optional[datetime], str]:
+    """Валідує дату у форматі день.місяць.рік (підтримує також старий запис з дефісами)"""
+    text = date_str.strip()
+    
+    for date_format in date_formats:
+        try:
+            date_obj = datetime.strptime(text, date_format)
+            if date_obj.year < 2000 or date_obj.year > 2100:
+                return False, None, "Некоректний рік"
+            return True, date_obj, ""
+        except ValueError:
+            continue
+    
+    example = "31.12.2025"
+    return False, None, f"Некоректний формат дати. Використовуйте: день.місяць.рік (наприклад: {example})"
 
 
 def validate_category(category: str) -> Tuple[bool, str, str]:

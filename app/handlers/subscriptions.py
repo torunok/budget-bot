@@ -15,7 +15,7 @@ from app.services.sheets_service import sheets_service
 from app.keyboards.inline import get_subscriptions_menu
 from app.keyboards.reply import get_main_menu_keyboard
 from app.utils.validators import validate_amount, validate_date
-from app.utils.formatters import format_currency
+from app.utils.formatters import format_currency, format_date
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -139,8 +139,8 @@ async def process_subscription_category(message: Message, state: FSMContext):
                 f"Сума: <b>{format_currency(amount)}</b>\n"
                 f"Категорія: <b>{category}</b>\n\n"
                 f"Крок 4/4: Введи дату наступного списання\n"
-                f"Формат: <code>день-місяць-рік</code>\n"
-                f"Наприклад: <code>15-12-2024</code>"
+                f"Формат: <code>день.місяць.рік</code>\n"
+                f"Наприклад: <code>15.12.2024</code>"
             )
         )
     except:
@@ -164,6 +164,9 @@ async def process_subscription_date(message: Message, state: FSMContext):
     category = data.get('category')
     nickname = message.from_user.username or "anonymous"
     
+    formatted_date = date_obj.strftime("%d.%m.%Y")
+    await state.update_data(subscription_date=formatted_date)
+    
     try:
         # Додаємо підписку (витрата з прапорцем Is_Subscription)
         sheets_service.append_transaction(
@@ -186,7 +189,7 @@ async def process_subscription_date(message: Message, state: FSMContext):
                     f"📝 Назва: <b>{name}</b>\n"
                     f"💰 Сума: <b>{format_currency(amount)}</b>\n"
                     f"📂 Категорія: <b>{category}</b>\n"
-                    f"📅 Дата: <b>{message.text}</b>\n\n"
+                    f"📅 Дата: <b>{formatted_date}</b>\n\n"
                     f"Я нагадаю тобі про платіж!"
                 )
             )
@@ -235,7 +238,7 @@ async def view_subscriptions(callback: CallbackQuery):
             name = sub.get('note', 'Без назви').replace('Підписка: ', '')
             amount = abs(float(sub.get('amount', 0)))
             category = sub.get('category', 'Інше')
-            date = sub.get('date', '')
+            date = format_date(sub.get('date')) or "—"
             
             total_monthly += amount
             

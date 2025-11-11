@@ -16,6 +16,7 @@ matplotlib.use('Agg')  # Для серверного використання
 import matplotlib.pyplot as plt
 from matplotlib import font_manager
 import seaborn as sns
+import numpy as np
 
 from app.config.settings import config
 
