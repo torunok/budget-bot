@@ -7,11 +7,11 @@
 
 import logging
 import re
-from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Tuple
-from collections import defaultdict
+from datetime import datetime
+from typing import List, Dict, Optional, Tuple, Any
 import gspread
 from gspread.exceptions import WorksheetNotFound, APIError
+from gspread.utils import rowcol_to_a1
 import json
 
 from app.config.settings import config
@@ -21,6 +21,19 @@ logger = logging.getLogger(__name__)
 
 class SheetsService:
     """Сервіс для роботи з Google Sheets"""
+
+    TRANSACTION_COLUMNS = [
+        'date', 'user_id', 'amount', 'category', 'note',
+        'nickname', 'balance', 'currency', 'Is_Subscription'
+    ]
+    GOAL_COLUMNS = [
+        'goal_name', 'target_amount', 'current_amount',
+        'deadline', 'completed', 'created_date'
+    ]
+    REQUIRED_COLUMNS = TRANSACTION_COLUMNS + ['record_type'] + GOAL_COLUMNS
+    TRANSACTION_RECORD_TYPE = 'transaction'
+    GOAL_RECORD_TYPE = 'goal'
+    DEFAULT_GOAL_DEADLINE = "Без дедлайну"
     
     def __init__(self):
         try:
@@ -40,31 +53,159 @@ class SheetsService:
             logger.error("Ensure GOOGLE_SERVICE_ACCOUNT_JSON and SPREADSHEET_ID are correctly set.")
             raise
     
+    def _ensure_required_columns(self, ws) -> List[str]:
+        headers = ws.row_values(1)
+        if not headers:
+            ws.append_row(self.REQUIRED_COLUMNS.copy())
+            return self.REQUIRED_COLUMNS.copy()
+        
+        missing = [col for col in self.REQUIRED_COLUMNS if col not in headers]
+        if missing:
+            headers.extend(missing)
+            extra_cols = len(headers) - ws.col_count
+            if extra_cols > 0:
+                ws.add_cols(extra_cols)
+            ws.update('A1', [headers])
+            logger.info(f"Added missing columns to worksheet '{ws.title}': {missing}")
+        return headers
+    
+    @staticmethod
+    def _header_index_map(headers: List[str]) -> Dict[str, int]:
+        return {name: idx + 1 for idx, name in enumerate(headers)}
+    
+    def _build_row(self, headers: List[str], values: Dict[str, Any]) -> List[Any]:
+        row = [''] * len(headers)
+        column_map = self._header_index_map(headers)
+        for key, value in values.items():
+            col_idx = column_map.get(key)
+            if col_idx:
+                row[col_idx - 1] = value
+        return row
+    
+    def _batch_update_cells(self, ws, headers: List[str], updates: List[Tuple[int, str, Any]]):
+        if not updates:
+            return
+        column_map = self._header_index_map(headers)
+        data = []
+        for row, column_name, value in updates:
+            col_idx = column_map.get(column_name)
+            if not col_idx:
+                continue
+            data.append({
+                'range': rowcol_to_a1(row, col_idx),
+                'values': [[value]]
+            })
+        if data:
+            ws.batch_update(data)
+    
+    def _get_goal_rows(self, ws, headers: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+        headers = headers or self._ensure_required_columns(ws)
+        all_values = ws.get_all_values(value_render_option='UNFORMATTED_VALUE')
+        if len(all_values) < 2:
+            return []
+        
+        sheet_headers = all_values[0]
+        if sheet_headers != headers:
+            headers = sheet_headers
+        try:
+            record_type_idx = headers.index('record_type')
+        except ValueError:
+            return []
+        
+        goals = []
+        for row_idx, row in enumerate(all_values[1:], start=2):
+            row_type = ''
+            if record_type_idx < len(row):
+                row_type = str(row[record_type_idx]).strip().lower()
+            if row_type != self.GOAL_RECORD_TYPE:
+                continue
+            goal = {}
+            for col_idx, header in enumerate(headers):
+                goal[header] = row[col_idx] if col_idx < len(row) else ""
+            goal['_row'] = row_idx
+            goals.append(goal)
+        return goals
+    
+    def _find_goal_row(self, ws, headers: Optional[List[str]], goal_name: str) -> int:
+        goals = self._get_goal_rows(ws, headers)
+        for goal in goals:
+            if goal.get('goal_name') == goal_name:
+                return goal['_row']
+        raise ValueError(f"Goal '{goal_name}' for '{ws.title}' not found")
+    
+    def _append_goal_row(
+        self,
+        ws,
+        headers: Optional[List[str]],
+        nickname: str,
+        goal_name: str,
+        target_amount: float,
+        deadline: Optional[str],
+        current_amount: float = 0.0,
+        completed: bool = False,
+        created_date: Optional[str] = None
+    ):
+        headers = headers or self._ensure_required_columns(ws)
+        payload = {
+            'record_type': self.GOAL_RECORD_TYPE,
+            'nickname': nickname,
+            'goal_name': goal_name,
+            'target_amount': target_amount,
+            'current_amount': current_amount,
+            'deadline': deadline or self.DEFAULT_GOAL_DEADLINE,
+            'completed': completed,
+            'created_date': created_date or datetime.now().strftime("%Y-%m-%d")
+        }
+        ws.append_row(self._build_row(headers, payload))
+    
+    @staticmethod
+    def _safe_float(value: Any, default: float = 0.0) -> float:
+        if value in ("", None):
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            try:
+                return float(str(value).replace(",", "."))
+            except (TypeError, ValueError):
+                return default
+    
+    @staticmethod
+    def _normalize_completed(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        return text in {"true", "1", "yes", "y", "completed"}
+    
     def get_or_create_worksheet(self, nickname: str):
         """Отримує або створює аркуш для користувача"""
         try:
             ws = self.spreadsheet.worksheet(nickname)
-            headers = ws.row_values(1)
-            
-            required_columns = ['date', 'user_id', 'amount', 'category', 'note', 
-                              'nickname', 'balance', 'currency', 'Is_Subscription']
-            
-            if not all(col in headers for col in required_columns):
-                logger.warning(f"Adding missing columns to worksheet '{nickname}'")
-                ws.clear()
-                ws.append_row(required_columns)
-                ws.append_row(["initial", "0", "0", "initial", "initial", 
-                             nickname, "0.0", config.DEFAULT_CURRENCY, False])
-            
+            self._ensure_required_columns(ws)
             return ws
             
         except WorksheetNotFound:
             logger.info(f"Creating new worksheet for '{nickname}'")
-            ws = self.spreadsheet.add_worksheet(title=nickname, rows=1000, cols=9)
-            ws.append_row(['date', 'user_id', 'amount', 'category', 'note', 
-                          'nickname', 'balance', 'currency', 'Is_Subscription'])
-            ws.append_row(["initial", "0", "0", "initial", "initial", 
-                          nickname, "0.0", config.DEFAULT_CURRENCY, False])
+            ws = self.spreadsheet.add_worksheet(
+                title=nickname,
+                rows=1000,
+                cols=len(self.REQUIRED_COLUMNS)
+            )
+            headers = self.REQUIRED_COLUMNS.copy()
+            ws.append_row(headers)
+            initial_row = self._build_row(headers, {
+                'record_type': self.TRANSACTION_RECORD_TYPE,
+                'date': "initial",
+                'user_id': "0",
+                'amount': 0,
+                'category': "initial",
+                'note': "initial",
+                'nickname': nickname,
+                'balance': "0.0",
+                'currency': config.DEFAULT_CURRENCY,
+                'Is_Subscription': False,
+            })
+            ws.append_row(initial_row)
             return ws
     
     def append_transaction(
@@ -78,13 +219,24 @@ class SheetsService:
     ) -> int:
         """Додає нову транзакцію"""
         ws = self.get_or_create_worksheet(nickname)
+        headers = self._ensure_required_columns(ws)
         timestamp = datetime.now().isoformat()
         
         current_balance, currency = self.get_current_balance(nickname)
         new_balance = current_balance + amount
         
-        row = [timestamp, str(user_id), amount, category, note, 
-               nickname, new_balance, currency, is_subscription]
+        row = self._build_row(headers, {
+            'record_type': self.TRANSACTION_RECORD_TYPE,
+            'date': timestamp,
+            'user_id': str(user_id),
+            'amount': amount,
+            'category': category,
+            'note': note,
+            'nickname': nickname,
+            'balance': new_balance,
+            'currency': currency,
+            'Is_Subscription': is_subscription
+        })
         ws.append_row(row)
         
         # Отримуємо кількість рядків для повернення індексу
@@ -101,21 +253,33 @@ class SheetsService:
         ws = self.get_or_create_worksheet(nickname)
         
         try:
-            # Читаємо всі дані без кешу
             all_values = ws.get_all_values(value_render_option='UNFORMATTED_VALUE')
             
             if len(all_values) < 2:
                 logger.warning(f"No transactions for {nickname}, returning default balance")
                 return 0.0, config.DEFAULT_CURRENCY
             
-            last_row = all_values[-1]
+            headers = all_values[0]
+            column_map = self._header_index_map(headers)
+            record_type_idx = column_map.get('record_type', 0) - 1 if column_map.get('record_type') else None
+            balance_idx = column_map.get('balance', 0) - 1
+            currency_idx = column_map.get('currency', 0) - 1
             
-            # Колонки: date, user_id, amount, category, note, nickname, balance, currency, Is_Subscription
-            balance = float(last_row[6]) if len(last_row) > 6 and last_row[6] else 0.0
-            currency = last_row[7] if len(last_row) > 7 and last_row[7] else config.DEFAULT_CURRENCY
+            for row in reversed(all_values[1:]):
+                if record_type_idx is not None and record_type_idx >= 0:
+                    if record_type_idx < len(row):
+                        row_type = str(row[record_type_idx]).strip().lower()
+                        if row_type and row_type != self.TRANSACTION_RECORD_TYPE:
+                            continue
+                if balance_idx < 0 or balance_idx >= len(row):
+                    continue
+                balance = self._safe_float(row[balance_idx], 0.0)
+                currency = row[currency_idx] if currency_idx >= 0 and currency_idx < len(row) and row[currency_idx] else config.DEFAULT_CURRENCY
+                logger.info(f"✅ Balance for {nickname}: {balance} {currency}")
+                return balance, currency
             
-            logger.info(f"✅ Balance for {nickname}: {balance} {currency} (from row {len(all_values)})")
-            return balance, currency
+            logger.warning(f"No transaction rows found for {nickname}, returning default balance")
+            return 0.0, config.DEFAULT_CURRENCY
             
         except (ValueError, IndexError, TypeError) as e:
             logger.error(f"Error getting balance for {nickname}: {e}", exc_info=True)
@@ -124,16 +288,42 @@ class SheetsService:
     def update_balance(self, nickname: str, new_balance: float, currency: str):
         """Оновлює баланс користувача"""
         ws = self.get_or_create_worksheet(nickname)
+        headers = self._ensure_required_columns(ws)
         
         try:
-            all_values = ws.get_all_values()
-            last_row_index = len(all_values)
-        except:
-            last_row_index = len(ws.col_values(1))
+            all_values = ws.get_all_values(value_render_option='UNFORMATTED_VALUE')
+        except APIError as e:
+            logger.error(f"Error loading worksheet for balance update: {e}", exc_info=True)
+            return
         
-        ws.update_cell(last_row_index, 7, new_balance)
-        ws.update_cell(last_row_index, 8, currency)
+        if len(all_values) < 2:
+            logger.warning(f"No rows to update balance for {nickname}")
+            return
         
+        headers = all_values[0]
+        column_map = self._header_index_map(headers)
+        record_type_idx = column_map.get('record_type', 0) - 1 if column_map.get('record_type') else None
+        
+        target_row = None
+        for row_idx in range(len(all_values), 1, -1):
+            row = all_values[row_idx - 1]
+            if record_type_idx is not None and record_type_idx >= 0:
+                if record_type_idx < len(row):
+                    row_type = str(row[record_type_idx]).strip().lower()
+                    if row_type and row_type != self.TRANSACTION_RECORD_TYPE:
+                        continue
+            target_row = row_idx
+            break
+        
+        if not target_row:
+            logger.warning(f"No transaction rows to update balance for {nickname}")
+            return
+        
+        updates = [
+            (target_row, 'balance', new_balance),
+            (target_row, 'currency', currency)
+        ]
+        self._batch_update_cells(ws, headers, updates)
         logger.info(f"✅ Updated balance for {nickname}: {new_balance} {currency}")
     
     def get_all_transactions(self, nickname: str) -> List[Dict]:
@@ -150,10 +340,18 @@ class SheetsService:
             
             headers = all_values[0]
             rows = all_values[1:]
+            column_map = self._header_index_map(headers)
+            record_type_idx = column_map.get('record_type', 0) - 1 if column_map.get('record_type') else None
             
             # Конвертуємо в список словників
             transactions = []
             for row_idx, row in enumerate(rows, start=2):
+                if record_type_idx is not None and record_type_idx >= 0:
+                    row_type = ''
+                    if record_type_idx < len(row):
+                        row_type = str(row[record_type_idx]).strip().lower()
+                    if row_type and row_type != self.TRANSACTION_RECORD_TYPE:
+                        continue
                 transaction = {}
                 for col_idx, header in enumerate(headers):
                     if col_idx < len(row):
@@ -177,9 +375,14 @@ class SheetsService:
             logger.error(f"❌ Error getting transactions: {e}", exc_info=True)
             # Fallback до старого методу
             records = ws.get_all_records()
+            transactions = []
             for idx, record in enumerate(records, start=2):
+                record_type = str(record.get('record_type', '')).strip().lower()
+                if record_type and record_type != self.TRANSACTION_RECORD_TYPE:
+                    continue
                 record['_row'] = idx
-            return records
+                transactions.append(record)
+            return transactions
     
     def get_subscriptions(self, nickname: str) -> List[Dict]:
         """Отримує всі підписки користувача"""
@@ -256,103 +459,85 @@ class SheetsService:
         base = nickname or "anonymous"
         safe = re.sub(r'[^A-Za-z0-9 _-]', '_', base)[:80]
         return f"{safe}_goals"
-
-    def get_goals_worksheet(self, nickname: str):
-        """Отримує або створює аркуш цілей користувача"""
-        worksheet_title = self._goal_sheet_title(nickname)
+    
+    def _migrate_legacy_goals(
+        self,
+        nickname: str,
+        ws=None,
+        headers: Optional[List[str]] = None
+    ) -> List[Dict]:
+        """Переносить старі цілі у основний аркуш користувача"""
+        ws = ws or self.get_or_create_worksheet(nickname)
+        headers = headers or self._ensure_required_columns(ws)
+        migrated = False
+        
+        legacy_sources = []
         try:
-            return self.spreadsheet.worksheet(worksheet_title)
+            per_user_ws = self.spreadsheet.worksheet(self._goal_sheet_title(nickname))
+            legacy_sources.append(("per_user", per_user_ws))
         except WorksheetNotFound:
-            ws = self.spreadsheet.add_worksheet(title=worksheet_title, rows=1000, cols=7)
-            ws.append_row([
-                "nickname", "goal_name", "target_amount", 
-                "current_amount", "deadline", "completed", "created_date"
-            ])
-            return ws
-
-    def _find_goal_row(self, ws, nickname: str, goal_name: str) -> int:
-        """Повертає індекс рядка з потрібною ціллю"""
-        all_values = ws.get_all_values()
-        for idx, row in enumerate(all_values[1:], start=2):
-            if len(row) >= 2 and row[0] == nickname and row[1] == goal_name:
-                return idx
-        raise ValueError(f"Goal '{goal_name}' for '{nickname}' not found")
-
-    def _migrate_legacy_goals(self, nickname: str) -> List[Dict]:
-        """Мігрує цілі з застарілого аркуша user_goals у персональний"""
+            per_user_ws = None
         try:
-            legacy_ws = self.spreadsheet.worksheet("user_goals")
+            global_ws = self.spreadsheet.worksheet("user_goals")
+            legacy_sources.append(("global", global_ws))
         except WorksheetNotFound:
-            return []
+            global_ws = None
         
-        values = legacy_ws.get_all_values()
-        if len(values) < 2:
-            return []
-        
-        headers = values[0]
-        rows_to_delete = []
-        records = []
-        
-        for idx, row in enumerate(values[1:], start=2):
-            if row and row[0] == nickname:
-                record = {}
-                for col_idx, header in enumerate(headers):
-                    record[header] = row[col_idx] if col_idx < len(row) else ""
-                records.append(record)
-                rows_to_delete.append(idx)
-        
-        if not records:
-            return []
-        
-        target_ws = self.get_goals_worksheet(nickname)
-        
-        def _to_float(value):
-            try:
-                return float(value)
-            except (TypeError, ValueError):
-                try:
-                    return float(str(value).replace(",", "."))
-                except (TypeError, ValueError):
-                    return 0.0
-        
-        for record in records:
-            target_amount = _to_float(record.get('target_amount'))
-            current_amount = _to_float(record.get('current_amount'))
-            deadline = record.get('deadline') or "Без дедлайну"
-            completed = record.get('completed', False)
-            if isinstance(completed, str):
-                completed = completed.strip().lower() in {"true", "1", "yes"}
-            elif not isinstance(completed, bool):
-                completed = bool(completed)
-            created_date = record.get('created_date') or datetime.now().strftime("%Y-%m-%d")
+        for source_type, source_ws in legacy_sources:
+            values = source_ws.get_all_values()
+            if len(values) < 2:
+                continue
             
-            target_ws.append_row([
-                nickname,
-                record.get('goal_name', 'Без назви'),
-                target_amount,
-                current_amount,
-                deadline,
-                completed,
-                created_date
-            ])
+            header_row = values[0]
+            rows_to_delete = []
+            for idx, row in enumerate(values[1:], start=2):
+                if source_type == "global":
+                    if not row or row[0] != nickname:
+                        continue
+                record = {}
+                for col_idx, header in enumerate(header_row):
+                    record[header] = row[col_idx] if col_idx < len(row) else ""
+                
+                self._append_goal_row(
+                    ws,
+                    headers,
+                    nickname=nickname,
+                    goal_name=record.get('goal_name', 'Без назви'),
+                    target_amount=self._safe_float(record.get('target_amount')),
+                    deadline=record.get('deadline') or self.DEFAULT_GOAL_DEADLINE,
+                    current_amount=self._safe_float(record.get('current_amount')),
+                    completed=self._normalize_completed(record.get('completed')),
+                    created_date=record.get('created_date') or datetime.now().strftime("%Y-%m-%d")
+                )
+                migrated = True
+                if source_type == "global":
+                    rows_to_delete.append(idx)
+            
+            if source_type == "global" and rows_to_delete:
+                for row_idx in sorted(rows_to_delete, reverse=True):
+                    source_ws.delete_rows(row_idx)
+            if source_type == "per_user" and migrated:
+                try:
+                    self.spreadsheet.del_worksheet(source_ws)
+                except Exception as e:
+                    logger.warning(f"Could not delete legacy goals sheet {source_ws.title}: {e}")
         
-        for row_idx in sorted(rows_to_delete, reverse=True):
-            legacy_ws.delete_rows(row_idx)
-        
-        return target_ws.get_all_records()
-
+        if migrated:
+            logger.info(f"Migrated legacy goals for {nickname}")
+            return self._get_goal_rows(ws, headers)
+        return []
+    
     def get_goals(self, nickname: str) -> List[Dict]:
         """Отримує всі цілі користувача"""
-        ws = self.get_goals_worksheet(nickname)
-        all_goals = ws.get_all_records()
+        ws = self.get_or_create_worksheet(nickname)
+        headers = self._ensure_required_columns(ws)
+        all_goals = self._get_goal_rows(ws, headers)
         if not all_goals:
-            all_goals = self._migrate_legacy_goals(nickname)
+            all_goals = self._migrate_legacy_goals(nickname, ws, headers)
         for goal in all_goals:
-            value = goal.get('completed')
-            if isinstance(value, str):
-                goal['completed'] = value.strip().lower() in {"true", "1", "yes"}
+            goal['completed'] = self._normalize_completed(goal.get('completed'))
         return all_goals
-
+    
     def add_goal(
         self, 
         nickname: str, 
@@ -362,22 +547,20 @@ class SheetsService:
         current_amount: float = 0
     ):
         """Додає нову ціль"""
-        ws = self.get_goals_worksheet(nickname)
-        created_date = datetime.now().strftime("%Y-%m-%d")
-        
-        row = [
-            nickname,
-            goal_name,
-            target_amount,
-            current_amount,
-            deadline or "Без дедлайну",
-            False,
-            created_date
-        ]
-        
-        ws.append_row(row)
+        ws = self.get_or_create_worksheet(nickname)
+        headers = self._ensure_required_columns(ws)
+        self._append_goal_row(
+            ws,
+            headers,
+            nickname=nickname,
+            goal_name=goal_name,
+            target_amount=target_amount,
+            deadline=deadline,
+            current_amount=current_amount,
+            completed=False
+        )
         logger.info(f"Goal added: {goal_name} for {nickname}")
-
+    
     def update_goal_progress(
         self,
         nickname: str,
@@ -386,13 +569,15 @@ class SheetsService:
         completed: bool = False
     ):
         """Оновлює прогрес цілі"""
-        ws = self.get_goals_worksheet(nickname)
-        
+        ws = self.get_or_create_worksheet(nickname)
+        headers = self._ensure_required_columns(ws)
         try:
-            row_index = self._find_goal_row(ws, nickname, goal_name)
-            ws.update_cell(row_index, 4, new_amount)
-            ws.update_cell(row_index, 6, completed)
-            
+            row_index = self._find_goal_row(ws, headers, goal_name)
+            updates = [
+                (row_index, 'current_amount', new_amount),
+                (row_index, 'completed', completed)
+            ]
+            self._batch_update_cells(ws, headers, updates)
             logger.info(f"Goal progress updated: {goal_name} - {new_amount}")
             
         except Exception as e:
@@ -409,23 +594,23 @@ class SheetsService:
         completed: Optional[bool] = None
     ):
         """Оновлює деталі цілі"""
-        ws = self.get_goals_worksheet(nickname)
+        ws = self.get_or_create_worksheet(nickname)
+        headers = self._ensure_required_columns(ws)
         
         try:
-            row_index = self._find_goal_row(ws, nickname, goal_name)
-            updates = []
+            row_index = self._find_goal_row(ws, headers, goal_name)
+            updates: List[Tuple[int, str, Any]] = []
             
             if new_name is not None:
-                updates.append((row_index, 2, new_name))
+                updates.append((row_index, 'goal_name', new_name))
             if target_amount is not None:
-                updates.append((row_index, 3, target_amount))
+                updates.append((row_index, 'target_amount', target_amount))
             if deadline is not None:
-                updates.append((row_index, 5, deadline or "Без дедлайну"))
+                updates.append((row_index, 'deadline', deadline or self.DEFAULT_GOAL_DEADLINE))
             if completed is not None:
-                updates.append((row_index, 6, completed))
+                updates.append((row_index, 'completed', completed))
             
-            for row, col, value in updates:
-                ws.update_cell(row, col, value)
+            self._batch_update_cells(ws, headers, updates)
             
             logger.info(
                 f"Goal details updated for {goal_name}: "
@@ -434,13 +619,14 @@ class SheetsService:
         except Exception as e:
             logger.error(f"Error updating goal details: {e}")
             raise
-
+    
     def delete_goal(self, nickname: str, goal_name: str):
         """Видаляє ціль"""
-        ws = self.get_goals_worksheet(nickname)
+        ws = self.get_or_create_worksheet(nickname)
+        headers = self._ensure_required_columns(ws)
         
         try:
-            row_index = self._find_goal_row(ws, nickname, goal_name)
+            row_index = self._find_goal_row(ws, headers, goal_name)
             ws.delete_rows(row_index)
             logger.info(f"Goal deleted: {goal_name}")
         except Exception as e:
