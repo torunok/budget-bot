@@ -1023,7 +1023,7 @@ async def delete_goals_menu(callback: CallbackQuery, state: FSMContext):
         await callback.answer("❌ Помилка", show_alert=True)
 
 
-@router.callback_query(F.data.startswith("goal_delete_"))
+@router.callback_query(F.data.regexp(r"^goal_delete_\d+$"))
 async def confirm_goal_delete(callback: CallbackQuery, state: FSMContext):
     """Підтвердження видалення цілі"""
     idx = int(callback.data.split("_")[2])
