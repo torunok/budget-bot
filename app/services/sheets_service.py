@@ -24,7 +24,8 @@ class SheetsService:
 
     TRANSACTION_COLUMNS = [
         'date', 'user_id', 'amount', 'category', 'note',
-        'nickname', 'balance', 'currency', 'Is_Subscription'
+        'nickname', 'balance', 'currency', 'Is_Subscription',
+        'subscription_name', 'subscription_due_date'
     ]
     GOAL_COLUMNS = [
         'goal_name', 'target_amount', 'current_amount',
@@ -97,6 +98,27 @@ class SheetsService:
             })
         if data:
             ws.batch_update(data)
+    
+    def update_transaction_fields(
+        self,
+        nickname: str,
+        row_index: int,
+        values: Dict[str, Any],
+        legacy_titles: Optional[List[str]] = None,
+        recalculate: bool = False
+    ):
+        """Оновлює кілька полів транзакції за назвами колонок."""
+        if not values:
+            return
+        ws = self.get_or_create_worksheet(nickname, legacy_titles)
+        headers = self._ensure_required_columns(ws)
+        updates = []
+        for column_name, column_value in values.items():
+            if column_name in headers:
+                updates.append((row_index, column_name, column_value))
+        self._batch_update_cells(ws, headers, updates)
+        if recalculate or 'amount' in values:
+            self.recalculate_balances(nickname, legacy_titles)
     
     def _get_goal_rows(self, ws, headers: Optional[List[str]] = None) -> List[Dict[str, Any]]:
         headers = headers or self._ensure_required_columns(ws)
@@ -177,14 +199,26 @@ class SheetsService:
         text = str(value).strip().lower()
         return text in {"true", "1", "yes", "y", "completed"}
     
-    def get_or_create_worksheet(self, nickname: str):
-        """Отримує або створює аркуш для користувача"""
+    def get_or_create_worksheet(self, nickname: str, legacy_titles: Optional[List[str]] = None):
+        """Отримує або створює аркуш користувача"""
         try:
             ws = self.spreadsheet.worksheet(nickname)
             self._ensure_required_columns(ws)
             return ws
             
         except WorksheetNotFound:
+            if legacy_titles:
+                for legacy in legacy_titles:
+                    if not legacy:
+                        continue
+                    try:
+                        ws = self.spreadsheet.worksheet(legacy)
+                        ws.update_title(nickname)
+                        self._ensure_required_columns(ws)
+                        logger.info(f"Renamed worksheet '{legacy}' -> '{nickname}'")
+                        return ws
+                    except WorksheetNotFound:
+                        continue
             logger.info(f"Creating new worksheet for '{nickname}'")
             ws = self.spreadsheet.add_worksheet(
                 title=nickname,
@@ -207,7 +241,7 @@ class SheetsService:
             })
             ws.append_row(initial_row)
             return ws
-    
+
     def append_transaction(
         self,
         user_id: int,
@@ -215,14 +249,18 @@ class SheetsService:
         amount: float,
         category: str = config.DEFAULT_CATEGORY,
         note: str = "",
-        is_subscription: bool = False
+        is_subscription: bool = False,
+        subscription_name: Optional[str] = None,
+        subscription_due_date: Optional[str] = None,
+        legacy_titles: Optional[List[str]] = None,
+        user_display_name: Optional[str] = None
     ) -> int:
         """Додає нову транзакцію"""
-        ws = self.get_or_create_worksheet(nickname)
+        ws = self.get_or_create_worksheet(nickname, legacy_titles)
         headers = self._ensure_required_columns(ws)
         timestamp = datetime.now().isoformat()
         
-        current_balance, currency = self.get_current_balance(nickname)
+        current_balance, currency = self.get_current_balance(nickname, legacy_titles)
         new_balance = current_balance + amount
         
         row = self._build_row(headers, {
@@ -232,25 +270,26 @@ class SheetsService:
             'amount': amount,
             'category': category,
             'note': note,
-            'nickname': nickname,
+            'nickname': user_display_name or nickname,
             'balance': new_balance,
             'currency': currency,
-            'Is_Subscription': is_subscription
+            'Is_Subscription': is_subscription,
+            'subscription_name': subscription_name or "",
+            'subscription_due_date': subscription_due_date or ""
         })
         ws.append_row(row)
         
-        # Отримуємо кількість рядків для повернення індексу
         try:
             row_count = len(ws.get_all_values())
-        except:
+        except Exception:
             row_count = len(ws.col_values(1))
         
         logger.info(f"✅ Added transaction for {nickname}: {amount} {currency}")
         return row_count
-    
-    def get_current_balance(self, nickname: str) -> Tuple[float, str]:
+
+    def get_current_balance(self, nickname: str, legacy_titles: Optional[List[str]] = None) -> Tuple[float, str]:
         """Отримує поточний баланс та валюту"""
-        ws = self.get_or_create_worksheet(nickname)
+        ws = self.get_or_create_worksheet(nickname, legacy_titles)
         
         try:
             all_values = ws.get_all_values(value_render_option='UNFORMATTED_VALUE')
@@ -285,9 +324,42 @@ class SheetsService:
             logger.error(f"Error getting balance for {nickname}: {e}", exc_info=True)
             return 0.0, config.DEFAULT_CURRENCY
     
-    def update_balance(self, nickname: str, new_balance: float, currency: str):
+    def recalculate_balances(self, nickname: str, legacy_titles: Optional[List[str]] = None):
+        """Повністю перераховує колонку balance для користувача."""
+        ws = self.get_or_create_worksheet(nickname, legacy_titles)
+        headers = self._ensure_required_columns(ws)
+        try:
+            all_values = ws.get_all_values(value_render_option='UNFORMATTED_VALUE')
+        except APIError as e:
+            logger.error(f"Error loading worksheet for balance recalculation: {e}", exc_info=True)
+            return
+        if len(all_values) < 2:
+            return
+        column_map = self._header_index_map(headers)
+        amount_idx = column_map.get('amount', 0) - 1
+        balance_idx = column_map.get('balance', 0) - 1
+        record_type_idx = column_map.get('record_type', 0) - 1 if column_map.get('record_type') else None
+        if amount_idx < 0 or balance_idx < 0:
+            logger.warning("Cannot recalculate balances: missing amount or balance columns")
+            return
+        
+        running_balance = 0.0
+        updates = []
+        for row_idx, row in enumerate(all_values[1:], start=2):
+            if record_type_idx is not None and record_type_idx >= 0:
+                if record_type_idx < len(row):
+                    row_type = str(row[record_type_idx]).strip().lower()
+                    if row_type and row_type != self.TRANSACTION_RECORD_TYPE:
+                        continue
+            amount = self._safe_float(row[amount_idx], 0.0) if amount_idx < len(row) else 0.0
+            running_balance += amount
+            updates.append((row_idx, 'balance', running_balance))
+        
+        self._batch_update_cells(ws, headers, updates)
+    
+    def update_balance(self, nickname: str, new_balance: float, currency: str, legacy_titles: Optional[List[str]] = None):
         """Оновлює баланс користувача"""
-        ws = self.get_or_create_worksheet(nickname)
+        ws = self.get_or_create_worksheet(nickname, legacy_titles)
         headers = self._ensure_required_columns(ws)
         
         try:
@@ -326,9 +398,9 @@ class SheetsService:
         self._batch_update_cells(ws, headers, updates)
         logger.info(f"✅ Updated balance for {nickname}: {new_balance} {currency}")
     
-    def get_all_transactions(self, nickname: str) -> List[Dict]:
+    def get_all_transactions(self, nickname: str, legacy_titles: Optional[List[str]] = None) -> List[Dict]:
         """Отримує всі транзакції користувача"""
-        ws = self.get_or_create_worksheet(nickname)
+        ws = self.get_or_create_worksheet(nickname, legacy_titles)
         
         try:
             # Використовуємо get_all_values для свіжих даних
@@ -384,24 +456,34 @@ class SheetsService:
                 transactions.append(record)
             return transactions
     
-    def get_subscriptions(self, nickname: str) -> List[Dict]:
+    def get_subscriptions(self, nickname: str, legacy_titles: Optional[List[str]] = None) -> List[Dict]:
         """Отримує всі підписки користувача"""
-        transactions = self.get_all_transactions(nickname)
+        transactions = self.get_all_transactions(nickname, legacy_titles)
         subscriptions = [t for t in transactions if str(t.get('Is_Subscription', '')).upper() == 'TRUE']
         logger.info(f"Found {len(subscriptions)} subscriptions for {nickname}")
         return subscriptions
     
-    def update_transaction(self, nickname: str, row_index: int, column_index: int, value):
+    def update_transaction(
+        self,
+        nickname: str,
+        row_index: int,
+        column_index: int,
+        value,
+        legacy_titles: Optional[List[str]] = None
+    ):
         """Оновлює значення в транзакції"""
-        ws = self.get_or_create_worksheet(nickname)
+        ws = self.get_or_create_worksheet(nickname, legacy_titles)
         ws.update_cell(row_index, column_index, value)
         logger.info(f"Updated transaction at row {row_index}, col {column_index}")
-    
-    def delete_transaction(self, nickname: str, row_index: int):
+        if column_index == 3:  # amount column
+            self.recalculate_balances(nickname, legacy_titles)
+
+    def delete_transaction(self, nickname: str, row_index: int, legacy_titles: Optional[List[str]] = None):
         """Видаляє транзакцію"""
-        ws = self.get_or_create_worksheet(nickname)
+        ws = self.get_or_create_worksheet(nickname, legacy_titles)
         ws.delete_rows(row_index)
         logger.info(f"Deleted transaction at row {row_index} for {nickname}")
+        self.recalculate_balances(nickname, legacy_titles)
     
     def get_feedback_worksheet(self):
         """Отримує або створює аркуш відгуків"""

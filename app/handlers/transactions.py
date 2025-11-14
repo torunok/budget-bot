@@ -184,12 +184,7 @@ async def process_edit_amount(message: Message, state: FSMContext):
         # Оновлюємо в Google Sheets (колонка 3 = amount)
         sheets_service.update_transaction(nickname, row_index, 3, amount)
         
-        # Перераховуємо баланс
-        transactions = sheets_service.get_all_transactions(nickname)
-        new_balance = sum(float(t['amount']) for t in transactions)
         balance, currency = sheets_service.get_current_balance(nickname)
-        sheets_service.update_balance(nickname, new_balance, currency)
-        
         await state.update_data(amount=amount)
         
         category = data.get('category', 'Інше')
@@ -200,7 +195,7 @@ async def process_edit_amount(message: Message, state: FSMContext):
             f"💰 Нова сума: {format_currency(abs(amount), currency)}\n"
             f"📂 Категорія: {category}\n"
             f"📝 Опис: {note or '—'}\n"
-            f"💳 Новий баланс: {format_currency(new_balance, currency)}\n\n"
+            f"💳 Новий баланс: {format_currency(balance, currency)}\n\n"
             f"Що ще змінити?",
             reply_markup=get_transaction_edit_keyboard()
         )
@@ -362,15 +357,11 @@ async def process_delete_transaction(callback: CallbackQuery, state: FSMContext)
         # Видаляємо транзакцію
         sheets_service.delete_transaction(nickname, row_index)
         
-        # Перераховуємо баланс
-        transactions = sheets_service.get_all_transactions(nickname)
-        new_balance = sum(float(t['amount']) for t in transactions)
         balance, currency = sheets_service.get_current_balance(nickname)
-        sheets_service.update_balance(nickname, new_balance, currency)
         
         await callback.message.edit_text(
             f"✅ <b>Транзакція видалена</b>\n\n"
-            f"💳 Новий баланс: {format_currency(new_balance, currency)}"
+            f"💳 Новий баланс: {format_currency(balance, currency)}"
         )
         
         await state.clear()
