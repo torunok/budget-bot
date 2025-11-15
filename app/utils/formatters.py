@@ -9,6 +9,8 @@ from datetime import datetime
 from typing import List, Dict, Optional
 from collections import defaultdict
 
+from app.utils.helpers import parse_sheet_datetime
+
 DISPLAY_DATE_FORMAT = "%d.%m.%Y"
 
 
@@ -29,20 +31,9 @@ def format_date(date_value: Optional[str], date_format: str = DISPLAY_DATE_FORMA
         if not raw:
             return ""
         
-        dt = None
-        # ISO 8601 / Google Sheets timestamp
-        try:
-            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        except ValueError:
-            # Підтримуємо крапки та дефіси у введенні
-            for fmt in ("%d.%m.%Y", "%d-%m-%Y"):
-                try:
-                    dt = datetime.strptime(raw, fmt)
-                    break
-                except ValueError:
-                    continue
-            if dt is None:
-                return raw
+        dt = parse_sheet_datetime(raw)
+        if dt is None:
+            return raw
     
     return dt.strftime(date_format)
 

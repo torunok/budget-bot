@@ -15,6 +15,7 @@ from gspread.utils import rowcol_to_a1
 import json
 
 from app.config.settings import config
+from app.utils.helpers import parse_sheet_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -258,7 +259,7 @@ class SheetsService:
         """Додає нову транзакцію"""
         ws = self.get_or_create_worksheet(nickname, legacy_titles)
         headers = self._ensure_required_columns(ws)
-        timestamp = datetime.now().isoformat()
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         current_balance, currency = self.get_current_balance(nickname, legacy_titles)
         new_balance = current_balance + amount
@@ -431,6 +432,12 @@ class SheetsService:
                     else:
                         transaction[header] = None
                 transaction['_row'] = row_idx
+                normalized_date = parse_sheet_datetime(transaction.get('date'))
+                if normalized_date:
+                    transaction['date'] = normalized_date.replace(tzinfo=None).isoformat()
+                due_date = parse_sheet_datetime(transaction.get('subscription_due_date'))
+                if due_date:
+                    transaction['subscription_due_date'] = due_date.replace(tzinfo=None).isoformat()
                 transactions.append(transaction)
             
             logger.info(f"✅ Loaded {len(transactions)} transactions for {nickname}")
@@ -498,7 +505,7 @@ class SheetsService:
     def append_feedback(self, username: str, feedback: str):
         """Додає відгук"""
         ws = self.get_feedback_worksheet()
-        timestamp = datetime.now().isoformat()
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         ws.append_row([timestamp, username, feedback])
         logger.info(f"Feedback added from {username}")
     

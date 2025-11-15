@@ -4,11 +4,18 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 import logging
 import pytz
 
 logger = logging.getLogger(__name__)
+
+SHEET_DATETIME_FORMATS = (
+    "%Y-%m-%d %H:%M:%S",
+    "%d.%m.%Y %H:%M:%S",
+    "%d-%m-%Y %H:%M:%S",
+)
+DATE_ONLY_FORMATS = ("%d.%m.%Y", "%d-%m-%Y")
 
 
 # ----------------------- ЧАСОВІ ДІАПАЗОНИ ----------------------- #
@@ -44,22 +51,48 @@ def get_period_dates(period: str) -> Tuple[datetime, datetime]:
     return start, now_utc
 
 
+def parse_sheet_datetime(value: Any) -> Optional[datetime]:
+    """Парсить дату/час з таблиці користувача."""
+    if value in ("", None, "initial"):
+        return None
+
+    raw = str(value).strip()
+    if not raw:
+        return None
+
+    candidate = raw.replace("Z", "+00:00")
+    parsed: Optional[datetime] = None
+
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        for fmt in SHEET_DATETIME_FORMATS + DATE_ONLY_FORMATS:
+            try:
+                parsed = datetime.strptime(raw, fmt)
+                break
+            except ValueError:
+                continue
+
+    if parsed is None:
+        return None
+
+    if parsed.tzinfo is None:
+        parsed = pytz.UTC.localize(parsed)
+    else:
+        parsed = parsed.astimezone(pytz.UTC)
+    return parsed
+
+
 def filter_transactions_by_period(transactions: List[Dict], period: str) -> List[Dict]:
     """Фільтрує транзакції згідно з діапазоном періоду."""
     start, end = get_period_dates(period)
     results: List[Dict] = []
     for idx, tx in enumerate(transactions):
         date_str = tx.get("date", "")
-        if not date_str or date_str == "initial":
+        parsed = parse_sheet_datetime(date_str)
+        if not parsed:
+            logger.warning("���������� ������ ���� � ���������� %s: %s", idx, date_str)
             continue
-        try:
-            parsed = datetime.fromisoformat(str(date_str).replace("Z", "+00:00"))
-        except ValueError:
-            logger.warning("Помилковий формат дати в транзакції %s: %s", idx, date_str)
-            continue
-
-        if parsed.tzinfo is None:
-            parsed = pytz.UTC.localize(parsed)
 
         if start <= parsed <= end:
             results.append(tx)
