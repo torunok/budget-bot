@@ -5,41 +5,81 @@
 Обробники для транзакцій (витрати/доходи) - ПОВНА ВЕРСІЯ
 """
 import logging
-from datetime import datetime, timedelta, timezone
+from typing import List
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 
-from app.core.states import UserState
+from app.core.states import UserState, TransactionState
 from app.services.sheets_service import sheets_service
 from app.keyboards.inline import get_transaction_edit_keyboard
 from app.keyboards.reply import get_main_menu_keyboard
-from app.utils.validators import parse_transaction_input, validate_amount
+from app.utils.validators import validate_amount, validate_category
 from app.utils.formatters import format_currency, format_transaction_list
 
 logger = logging.getLogger(__name__)
 router = Router()
 
-TRANSACTION_INPUT_TIMEOUT = timedelta(minutes=1)
 BUDGET_WARN_THRESHOLD = 70
 BUDGET_ALERT_THRESHOLD = 90
 
+CATEGORY_CALLBACK_PREFIX = "txcat"
+CANCEL_COMMANDS = {"0", "скасувати", "відміна", "cancel", "stop", "стоп"}
+DEFAULT_EXPENSE_CATEGORIES = [
+    "Продукти",
+    "Транспорт",
+    "Розваги",
+    "Комунальні",
+    "Заощадження",
+    "Інше",
+]
+DEFAULT_INCOME_CATEGORIES = [
+    "Зарплата",
+    "Бонус",
+    "Фріланс",
+    "Подарунки",
+    "Інше",
+]
 
-def _new_input_deadline() -> str:
-    """Повертає ISO-рядок дедлайну для введення даних"""
-    return (datetime.now(timezone.utc) + TRANSACTION_INPUT_TIMEOUT).isoformat()
 
-
-def _is_input_timeout_expired(data: dict) -> bool:
-    """Перевіряє, чи минув час очікування введення"""
-    deadline = data.get('input_deadline')
-    if not deadline:
-        return False
+def _gather_category_options(nickname: str, is_expense: bool) -> List[str]:
+    """Повертає список категорій для вибору."""
     try:
-        expires_at = datetime.fromisoformat(deadline)
-    except (TypeError, ValueError):
-        return False
-    return datetime.now(timezone.utc) >= expires_at
+        user_categories = sheets_service.get_user_categories(nickname, is_expense=is_expense)
+    except Exception as exc:
+        logger.error("Error loading categories for %s: %s", nickname, exc, exc_info=True)
+        user_categories = []
+
+    seen = set()
+    options: List[str] = []
+    for category in user_categories:
+        name = (category.get('category_name') or "").strip()
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        options.append(name)
+
+    if options:
+        return options
+
+    return list(DEFAULT_EXPENSE_CATEGORIES if is_expense else DEFAULT_INCOME_CATEGORIES)
+
+
+def _build_category_keyboard(categories: List[str]) -> InlineKeyboardMarkup:
+    """Створює клавіатуру для вибору категорії."""
+    rows = []
+    row = []
+    for idx, category in enumerate(categories):
+        row.append(InlineKeyboardButton(text=category, callback_data=f"{CATEGORY_CALLBACK_PREFIX}:{idx}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+
+    rows.append([InlineKeyboardButton(text="➕ Додати категорію", callback_data=f"{CATEGORY_CALLBACK_PREFIX}:add")])
+    rows.append([InlineKeyboardButton(text="❌ Скасувати", callback_data=f"{CATEGORY_CALLBACK_PREFIX}:cancel")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _build_budget_alert(nickname: str, category: str, currency: str) -> str:
@@ -100,66 +140,199 @@ def _build_budget_alert(nickname: str, category: str, currency: str) -> str:
 
 # ==================== ДОДАВАННЯ ТРАНЗАКЦІЙ ====================
 
+
+async def _start_transaction_flow(message: Message, state: FSMContext, transaction_type: str):
+    """Починає покроковий сценарій додавання транзакції."""
+    await state.set_state(None)
+    await state.update_data(transaction_type=transaction_type)
+
+    if transaction_type == "expense":
+        prefix = "💸 <b>Додаємо витрату</b>\n"
+    else:
+        prefix = "💰 <b>Додаємо дохід</b>\n"
+
+    await message.answer(
+        prefix +
+        "Введи лише суму (наприклад: <code>150</code> або <code>150.75</code>).\n"
+        "Надішли 0 або «скасувати», щоб відмінити додавання.",
+        reply_markup=get_main_menu_keyboard()
+    )
+    await state.set_state(TransactionState.waiting_amount)
+
+
 @router.message(F.text == "📉 Додати витрату")
 async def add_expense_handler(message: Message, state: FSMContext):
     """Початок додавання витрати"""
-    await message.answer(
-        "💸 Введи суму та призначення витрати:\n\n"
-        "Наприклад: <code>150 Продукти Булочка</code>\n"
-        "або просто: <code>150 Продукти</code>",
-        reply_markup=get_main_menu_keyboard()
-    )
-    await state.set_state(UserState.add_expense)
-    await state.update_data(input_deadline=_new_input_deadline())
+    await _start_transaction_flow(message, state, "expense")
 
 
 @router.message(F.text == "📈 Додати дохід")
 async def add_income_handler(message: Message, state: FSMContext):
     """Початок додавання доходу"""
-    await message.answer(
-        "💰 Введи суму та призначення доходу:\n\n"
-        "Наприклад: <code>5000 зарплата</code>\n"
-        "або: <code>1500 фріланс</code>",
-        reply_markup=get_main_menu_keyboard()
-    )
-    await state.set_state(UserState.add_income)
-    await state.update_data(input_deadline=_new_input_deadline())
+    await _start_transaction_flow(message, state, "income")
 
 
-@router.message(UserState.add_expense)
-@router.message(UserState.add_income)
-async def process_transaction(message: Message, state: FSMContext):
-    """Обробка введеної транзакції"""
-    current_state = await state.get_state()
-    is_expense = current_state == UserState.add_expense
-    state_data = await state.get_data()
-    if _is_input_timeout_expired(state_data):
-        await state.clear()
-        await message.reply(
-            "⏰ Час на введення минув. Відправ команду знову, щоб додати транзакцію."
-        )
+@router.message(TransactionState.waiting_amount)
+async def process_transaction_amount(message: Message, state: FSMContext):
+    """Обробляє суму транзакції та показує категорії."""
+    text = (message.text or "").strip()
+    if text.lower() in CANCEL_COMMANDS:
+        await state.set_state(None)
+        await message.answer("Додавання транзакції скасовано.")
         return
-    
-    amount, note = parse_transaction_input(message.text)
-    
-    if amount is None:
-        await message.reply(
-            "❌ Некоректна сума. Спробуй ще раз:\n"
-            "Наприклад: <code>150 Продукти Булочка</code>"
-        )
+
+    is_valid, amount_value, error = validate_amount(text)
+    if not is_valid or amount_value is None:
+        await message.reply(f"❌ {error}\nСпробуй ще раз, наприклад: <code>150</code>")
         return
-    
-    # Визначаємо категорію (перше слово з опису)
-    category = note.split()[0].capitalize() if note else "Інше"
-    
-    # Додаємо знак до суми
-    if is_expense and amount > 0:
-        amount = -amount
-    elif not is_expense and amount < 0:
-        amount = abs(amount)
-    
+
+    data = await state.get_data()
+    transaction_type = data.get('transaction_type') or "expense"
+    is_expense = transaction_type == "expense"
+
+    if is_expense and amount_value > 0:
+        amount_value = -amount_value
+    elif not is_expense and amount_value < 0:
+        amount_value = abs(amount_value)
+
     nickname = message.from_user.username or "anonymous"
-    
+    categories = _gather_category_options(nickname, is_expense=is_expense)
+
+    await state.update_data(
+        amount=amount_value,
+        category=None,
+        note="",
+        category_options=categories,
+    )
+    await state.set_state(TransactionState.choosing_category)
+
+    await message.answer(
+        "📂 Обери категорію для цієї транзакції:",
+        reply_markup=_build_category_keyboard(categories)
+    )
+
+
+@router.callback_query(TransactionState.choosing_category, F.data.startswith(f"{CATEGORY_CALLBACK_PREFIX}:"))
+async def process_category_choice(callback: CallbackQuery, state: FSMContext):
+    """Обробляє вибір категорії або додавання нової."""
+    action = callback.data.split(":", maxsplit=1)[1]
+    data = await state.get_data()
+
+    if action == "cancel":
+        await state.set_state(None)
+        await callback.message.edit_text("Додавання транзакції скасовано.")
+        await callback.answer()
+        return
+
+    if action == "add":
+        await state.set_state(TransactionState.adding_custom_category)
+        await callback.message.edit_text(
+            "Введи назву нової категорії.\n"
+            "Можна додати emoji. Надішли 0 або «скасувати», щоб повернутися."
+        )
+        await callback.answer()
+        return
+
+    categories = data.get('category_options') or []
+    try:
+        idx = int(action)
+        selected_category = categories[idx]
+    except (ValueError, IndexError):
+        await callback.answer("Категорія не знайдена", show_alert=True)
+        return
+
+    await state.update_data(category=selected_category)
+    await state.set_state(TransactionState.entering_description)
+    await callback.message.edit_text(
+        f"📂 Обрано категорію: <b>{selected_category}</b>\n\n"
+        "📝 Введи опис транзакції (наприклад: <code>Булочка з маком</code>)\n"
+        "Або надішли «-», щоб пропустити.",
+    )
+    await callback.answer()
+
+
+@router.message(TransactionState.adding_custom_category)
+async def process_custom_category(message: Message, state: FSMContext):
+    """Додає нову категорію та одразу використовує її."""
+    text = (message.text or "").strip()
+    if text.lower() in CANCEL_COMMANDS:
+        data = await state.get_data()
+        categories = data.get('category_options') or []
+        if not categories:
+            nickname = message.from_user.username or "anonymous"
+            is_expense = (data.get('transaction_type') or "expense") == "expense"
+            categories = _gather_category_options(nickname, is_expense=is_expense)
+            await state.update_data(category_options=categories)
+        await state.set_state(TransactionState.choosing_category)
+        await message.answer(
+            "Добре, обери категорію зі списку:",
+            reply_markup=_build_category_keyboard(categories)
+        )
+        return
+
+    is_valid, category_name, error = validate_category(text)
+    if not is_valid:
+        await message.reply(f"❌ {error}")
+        return
+
+    data = await state.get_data()
+    transaction_type = data.get('transaction_type') or "expense"
+    is_expense = transaction_type == "expense"
+    nickname = message.from_user.username or "anonymous"
+
+    try:
+        sheets_service.add_custom_category(nickname, category_name, is_expense=is_expense)
+    except ValueError as exc:
+        await message.reply(f"⚠️ {exc}")
+        return
+    except Exception as exc:
+        logger.error("Error adding custom category: %s", exc, exc_info=True)
+        await message.reply("❌ Не вдалося додати категорію. Спробуй пізніше.")
+        return
+
+    categories = data.get('category_options') or []
+    if category_name not in categories:
+        categories.append(category_name)
+        await state.update_data(category_options=categories)
+
+    await state.update_data(category=category_name)
+    await state.set_state(TransactionState.entering_description)
+    await message.answer(
+        f"✅ Категорія «{category_name}» додана та вибрана.\n\n"
+        "📝 Тепер введи опис транзакції або «-», щоб пропустити."
+    )
+
+
+@router.message(TransactionState.entering_description)
+async def process_transaction_description(message: Message, state: FSMContext):
+    """Отримує опис та створює транзакцію."""
+    text = (message.text or "").strip()
+    if text.lower() in CANCEL_COMMANDS:
+        await state.set_state(None)
+        await message.answer("Додавання транзакції скасовано.")
+        return
+
+    note = "" if text in {"", "-"} else text
+    if len(note) > 200:
+        await message.reply("❌ Опис занадто довгий. Максимум 200 символів.")
+        return
+
+    data = await state.get_data()
+    transaction_type = data.get('transaction_type') or "expense"
+    amount = data.get('amount')
+    category = data.get('category')
+
+    if amount is None:
+        await message.answer("Спочатку введи суму.")
+        await state.set_state(TransactionState.waiting_amount)
+        return
+    if not category:
+        await message.answer("Спочатку обери категорію.")
+        await state.set_state(TransactionState.choosing_category)
+        return
+
+    nickname = message.from_user.username or "anonymous"
+
     try:
         row_index = sheets_service.append_transaction(
             user_id=message.from_user.id,
@@ -168,46 +341,45 @@ async def process_transaction(message: Message, state: FSMContext):
             category=category,
             note=note
         )
-        
-        # Зберігаємо дані для можливого редагування
+
         await state.update_data(
             last_transaction_row=row_index,
-            transaction_type="expense" if is_expense else "income",
+            transaction_type=transaction_type,
             amount=amount,
             category=category,
             note=note,
-            input_deadline=None
+            category_options=[],
         )
-        
-        transaction_type = "витрата" if is_expense else "дохід"
+
+        is_expense = transaction_type == "expense"
+        transaction_label = "витрата" if is_expense else "дохід"
         emoji = "📉" if is_expense else "📈"
-        
-        # Отримуємо новий баланс
+
         balance, currency = sheets_service.get_current_balance(nickname)
         budget_alert = ""
         if is_expense:
             budget_alert = _build_budget_alert(nickname, category, currency)
 
         response_text = (
-            f"{emoji} <b>Додано {transaction_type}</b>\n\n"
+            f"{emoji} <b>Додано {transaction_label}</b>\n\n"
             f"💰 Сума: {format_currency(abs(amount), currency)}\n"
             f"📂 Категорія: {category}\n"
             f"📝 Опис: {note or '—'}\n"
             f"💳 Новий баланс: {format_currency(balance, currency)}\n\n"
-            f"Хочеш щось змінити?"
+            "Хочеш щось змінити?"
         )
         if budget_alert:
             response_text += f"\n\n{budget_alert}"
 
-        await message.reply(
+        await message.answer(
             response_text,
             reply_markup=get_transaction_edit_keyboard()
         )
-        
+
         await state.set_state(None)
-        
-    except Exception as e:
-        logger.error(f"Error adding transaction: {e}", exc_info=True)
+
+    except Exception as exc:
+        logger.error("Error adding transaction: %s", exc, exc_info=True)
         await message.reply("❌ Помилка при додаванні транзакції. Спробуй ще раз.")
 
 

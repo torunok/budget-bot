@@ -40,6 +40,12 @@ class SubscriptionState(StatesGroup):
     edit_date = State()
 
 
+class TransactionState(StatesGroup):
+    """Стани для покрокового додавання транзакцій"""
+    waiting_amount = State()
+    choosing_category = State()
+    adding_custom_category = State()
+    entering_description = State()
 
 
 class BudgetState(StatesGroup):
