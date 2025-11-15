@@ -19,6 +19,7 @@ import seaborn as sns
 import numpy as np
 
 from app.config.settings import config
+from app.utils.helpers import parse_sheet_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -117,10 +118,13 @@ class ChartService:
         
         # Фільтруємо за період
         cutoff_date = datetime.now() - timedelta(days=period_days)
-        filtered = [
-            t for t in transactions
-            if datetime.fromisoformat(t['date']) >= cutoff_date
-        ]
+        filtered = []
+        for t in transactions:
+            parsed = parse_sheet_datetime(t.get('date'))
+            if not parsed:
+                continue
+            if parsed >= cutoff_date:
+                filtered.append((t, parsed))
         
         if not filtered:
             return ChartService._create_no_data_chart(f"Немає даних за останні {period_days} днів")
@@ -129,8 +133,8 @@ class ChartService:
         daily_expense = defaultdict(float)
         daily_income = defaultdict(float)
         
-        for t in filtered:
-            date = datetime.fromisoformat(t['date']).date()
+        for t, parsed in filtered:
+            date = parsed.date()
             amount = float(t.get('amount', 0))
             
             if amount < 0:
@@ -187,8 +191,10 @@ class ChartService:
         monthly_data = defaultdict(lambda: {'income': 0, 'expense': 0})
         
         for t in transactions:
-            date = datetime.fromisoformat(t['date'])
-            month_key = date.strftime('%Y-%m')
+            parsed = parse_sheet_datetime(t.get('date'))
+            if not parsed:
+                continue
+            month_key = parsed.strftime('%Y-%m')
             amount = float(t.get('amount', 0))
             
             if amount < 0:
@@ -251,13 +257,18 @@ class ChartService:
             return ChartService._create_no_data_chart("Немає даних для відображення")
         
         # Сортуємо за датою
-        sorted_transactions = sorted(transactions, key=lambda x: x['date'])
+        valid = []
+        for t in transactions:
+            parsed = parse_sheet_datetime(t.get('date'))
+            if parsed:
+                valid.append((t, parsed))
+        sorted_transactions = sorted(valid, key=lambda x: x[1])
         
         dates = []
         balances = []
         
-        for t in sorted_transactions:
-            date = datetime.fromisoformat(t['date'])
+        for t, parsed in sorted_transactions:
+            date = parsed
             balance = float(t.get('balance', 0))
             dates.append(date)
             balances.append(balance)
@@ -294,12 +305,16 @@ class ChartService:
         
         # Фільтруємо за категорією та періодом
         cutoff_date = datetime.now() - timedelta(days=period_days)
-        filtered = [
-            t for t in transactions
-            if t.get('category') == category
-            and datetime.fromisoformat(t['date']) >= cutoff_date
-            and float(t.get('amount', 0)) < 0
-        ]
+        filtered = []
+        for t in transactions:
+            if t.get('category') != category:
+                continue
+            parsed = parse_sheet_datetime(t.get('date'))
+            if not parsed or parsed < cutoff_date:
+                continue
+            if float(t.get('amount', 0)) >= 0:
+                continue
+            filtered.append((t, parsed))
         
         if not filtered:
             return ChartService._create_no_data_chart(f"Немає витрат по категорії '{category}'")
@@ -307,8 +322,8 @@ class ChartService:
         # Групуємо по тижнях
         weekly_data = defaultdict(float)
         
-        for t in filtered:
-            date = datetime.fromisoformat(t['date'])
+        for t, parsed in filtered:
+            date = parsed
             week_start = date - timedelta(days=date.weekday())
             week_key = week_start.strftime('%Y-%m-%d')
             amount = abs(float(t.get('amount', 0)))
