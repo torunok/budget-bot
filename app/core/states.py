@@ -1,4 +1,4 @@
-# ============================================
+﻿# ============================================
 # FILE: app/core/states.py
 # ============================================
 """
@@ -44,6 +44,12 @@ class AnalyticsState(StatesGroup):
     select_comparison_period = State()
 
 
+class AIAnalysisState(StatesGroup):
+    """States for AI analysis"""
+    awaiting_start_date = State()
+    awaiting_end_date = State()
+
+
 class BudgetGoalState(StatesGroup):
     """Стани для цілей заощаджень"""
     set_goal_name = State()
@@ -55,3 +61,4 @@ class BudgetGoalState(StatesGroup):
     edit_goal_deadline = State()
     edit_goal_progress = State()
     delete_goal_confirmation = State()
+

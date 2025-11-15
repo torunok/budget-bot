@@ -1,4 +1,4 @@
-# ============================================
+﻿# ============================================
 # FILE: app/keyboards/inline.py
 # ============================================
 """
@@ -89,6 +89,17 @@ def get_stats_period_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+
+def get_ai_analysis_period_keyboard() -> InlineKeyboardMarkup:
+    """Клавіатура для вибору періоду AI-аналізу"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📅 Останні 30 днів", callback_data="ai_period_30")],
+        [InlineKeyboardButton(text="📅 Останні 60 днів", callback_data="ai_period_60")],
+        [InlineKeyboardButton(text="📅 Останні 90 днів", callback_data="ai_period_90")],
+        [InlineKeyboardButton(text="📅 За весь час", callback_data="ai_period_all")],
+        [InlineKeyboardButton(text="📅 Кастомний період", callback_data="ai_period_custom")],
+    ])
+
 def get_subscriptions_menu() -> InlineKeyboardMarkup:
     """Меню підписок"""
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -126,3 +137,7 @@ def get_currency_keyboard() -> InlineKeyboardMarkup:
     buttons.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_settings")])
     
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+
+
