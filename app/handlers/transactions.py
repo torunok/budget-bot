@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 router = Router()
 
 TRANSACTION_INPUT_TIMEOUT = timedelta(minutes=1)
+BUDGET_WARN_THRESHOLD = 70
+BUDGET_ALERT_THRESHOLD = 90
 
 
 def _new_input_deadline() -> str:
@@ -38,6 +40,63 @@ def _is_input_timeout_expired(data: dict) -> bool:
     except (TypeError, ValueError):
         return False
     return datetime.now(timezone.utc) >= expires_at
+
+
+def _build_budget_alert(nickname: str, category: str, currency: str) -> str:
+    """Повертає попередження, якщо бюджет по категорії близький до ліміту."""
+    try:
+        budgets = sheets_service.get_budget_status(nickname)
+    except Exception as exc:
+        logger.error("Budget warning skipped: %s", exc, exc_info=True)
+        return ""
+
+    normalized_category = (category or "").strip().lower()
+    for budget in budgets:
+        budget_category = (budget.get('category') or "").strip()
+        if budget_category.lower() != normalized_category:
+            continue
+
+        limit_amount = float(budget.get('limit', budget.get('budget_amount', 0)) or 0)
+        if limit_amount <= 0:
+            return ""
+
+        spent = float(budget.get('calculated_spent', budget.get('current_spent', 0)) or 0)
+        percentage = float(budget.get('percentage') or 0)
+        if not percentage and spent and limit_amount:
+            percentage = spent / limit_amount * 100
+
+        if percentage < BUDGET_WARN_THRESHOLD:
+            return ""
+
+        remaining = max(limit_amount - spent, 0)
+        period = (budget.get('period') or "строк").lower()
+        period_label = {
+            "monthly": "цього місяця",
+            "weekly": "цього тижня",
+            "yearly": "цього року",
+        }.get(period, "за вибраний період")
+
+        if percentage >= 100:
+            heading = "🔴 <b>Бюджет перевищено</b>"
+        elif percentage >= BUDGET_ALERT_THRESHOLD:
+            heading = "🔴 <b>Майже вичерпано бюджет</b>"
+        else:
+            heading = "⚠️ <b>Бюджет майже використано</b>"
+
+        lines = [
+            heading,
+            (
+                f"Категорія «{budget_category or category}» витратила "
+                f"{format_currency(spent, currency)} з "
+                f"{format_currency(limit_amount, currency)} {period_label}."
+            ),
+        ]
+        if remaining > 0:
+            lines.append(f"Залишок: {format_currency(remaining, currency)}.")
+        return "\n".join(lines)
+
+    return ""
+
 
 # ==================== ДОДАВАННЯ ТРАНЗАКЦІЙ ====================
 
@@ -125,14 +184,23 @@ async def process_transaction(message: Message, state: FSMContext):
         
         # Отримуємо новий баланс
         balance, currency = sheets_service.get_current_balance(nickname)
-        
-        await message.reply(
+        budget_alert = ""
+        if is_expense:
+            budget_alert = _build_budget_alert(nickname, category, currency)
+
+        response_text = (
             f"{emoji} <b>Додано {transaction_type}</b>\n\n"
             f"💰 Сума: {format_currency(abs(amount), currency)}\n"
             f"📂 Категорія: {category}\n"
             f"📝 Опис: {note or '—'}\n"
             f"💳 Новий баланс: {format_currency(balance, currency)}\n\n"
-            f"Хочеш щось змінити?",
+            f"Хочеш щось змінити?"
+        )
+        if budget_alert:
+            response_text += f"\n\n{budget_alert}"
+
+        await message.reply(
+            response_text,
             reply_markup=get_transaction_edit_keyboard()
         )
         

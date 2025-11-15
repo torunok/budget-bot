@@ -825,6 +825,71 @@ class SheetsService:
         all_budgets = ws.get_all_records()
         return [b for b in all_budgets if b.get('nickname') == nickname]
 
+    def delete_category_budget(self, nickname: str, category: str):
+        """Видаляє бюджет категорії"""
+        ws = self.get_budgets_worksheet()
+        try:
+            all_values = ws.get_all_values()
+            for idx, row in enumerate(all_values[1:], start=2):
+                if len(row) >= 2 and row[0] == nickname and row[1] == category:
+                    ws.delete_rows(idx)
+                    logger.info(f"Budget deleted: {category} for {nickname}")
+                    return
+            raise ValueError("Бюджет не знайдено")
+        except Exception as exc:
+            logger.error(f"Error deleting budget: {exc}")
+            raise
+
+    def get_budget_status(
+        self,
+        nickname: str,
+        legacy_titles: Optional[List[str]] = None,
+        transactions: Optional[List[Dict]] = None,
+    ) -> List[Dict]:
+        """Повертає бюджети з фактичними витратами"""
+        budgets = self.get_category_budgets(nickname)
+        if not budgets:
+            return []
+        if transactions is None:
+            transactions = self.get_all_transactions(nickname, legacy_titles)
+        now = datetime.now()
+        status: List[Dict[str, Any]] = []
+        for budget in budgets:
+            category = (budget.get('category') or '').strip()
+            limit = self._safe_float(budget.get('budget_amount'), 0.0)
+            period = (budget.get('period') or 'monthly').strip().lower()
+            period_start = self._budget_period_start(period, now)
+            spent = 0.0
+            for tx in transactions:
+                tx_category = (tx.get('category') or '').strip()
+                if tx_category.lower() != category.lower():
+                    continue
+                amount = self._safe_float(tx.get('amount'), 0.0)
+                if amount >= 0:
+                    continue
+                parsed = parse_sheet_datetime(tx.get('date'))
+                if not parsed or parsed < period_start:
+                    continue
+                spent += abs(amount)
+            info = budget.copy()
+            info['calculated_spent'] = round(spent, 2)
+            info['limit'] = limit
+            info['remaining'] = round(max(0.0, limit - spent), 2)
+            info['percentage'] = (spent / limit * 100) if limit > 0 else 0.0
+            status.append(info)
+        return status
+
+    @staticmethod
+    def _budget_period_start(period: str, now: Optional[datetime] = None) -> datetime:
+        now = now or datetime.now()
+        period = (period or "").lower()
+        if period == "weekly":
+            start = now - timedelta(days=now.weekday())
+            return start.replace(hour=0, minute=0, second=0, microsecond=0)
+        if period == "yearly":
+            return now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
     def update_budget_spending(self, nickname: str, category: str, amount: float):
         """Оновлює витрати по бюджету"""
         ws = self.get_budgets_worksheet()

@@ -31,51 +31,47 @@ router = Router()
 async def show_statistics(message: Message):
     """Показує меню статистики"""
     nickname = message.from_user.username or "anonymous"
-    
     try:
         balance, currency = sheets_service.get_current_balance(nickname)
         transactions = sheets_service.get_all_transactions(nickname)
-        
-        # 🔍 ДІАГНОСТИКА 1: Загальна кількість транзакцій
         logger.info(f"📊 Statistics for {nickname}")
         logger.info(f"   Total transactions: {len(transactions)}")
-        
-        # 🔍 ДІАГНОСТИКА 2: Перші 3 транзакції
+
         for idx, t in enumerate(transactions[:3]):
             logger.info(f"   Transaction {idx+1}:")
             logger.info(f"      Date: {t.get('date')}")
             logger.info(f"      Amount: {t.get('amount')}")
             logger.info(f"      Category: {t.get('category')}")
             logger.info(f"      Is_Subscription: {t.get('Is_Subscription')}")
-        
-        # Фільтруємо підписки
+
         non_subscription = [t for t in transactions if not t.get('Is_Subscription')]
         logger.info(f"   Non-subscription transactions: {len(non_subscription)}")
-        
-        # Фільтруємо сьогоднішні транзакції
+
         today_transactions = filter_transactions_by_period(non_subscription, 'today')
-        
-        # 🔍 ДІАГНОСТИКА 3: Відфільтровані транзакції
         logger.info(f"   Today transactions after filter: {len(today_transactions)}")
-        
         for idx, t in enumerate(today_transactions[:3]):
             logger.info(f"   Today Transaction {idx+1}:")
             logger.info(f"      Date: {t.get('date')}")
             logger.info(f"      Amount: {t.get('amount')}")
-        
+
         stats_text = format_statistics(today_transactions, currency)
-        
-        message_text = (
-            f"💰 <b>Поточний баланс:</b> {format_currency(balance, currency)}\n\n"
-            f"<b>Сьогодні:</b>\n{stats_text}\n\n"
-            f"Обери період для детальної статистики:"
+        budget_summary = _build_budget_summary_text(nickname, transactions, currency)
+
+        stats_block = f"📅 <b>Сьогодні:</b>\n{stats_text}"
+        message_text = _compose_statistics_message(
+            title="📊 <b>Статистика за сьогодні</b>",
+            balance=balance,
+            currency=currency,
+            stats_block=stats_block,
+            budget_summary=budget_summary,
+            include_period_prompt=True,
         )
-        
+
         await message.answer(
             message_text,
             reply_markup=get_stats_period_keyboard()
         )
-        
+
     except Exception as e:
         logger.error(f"Error showing statistics: {e}", exc_info=True)
         await message.answer("❌ Помилка отримання статистики")
@@ -86,31 +82,27 @@ async def show_period_statistics(callback: CallbackQuery):
     """Показує статистику за обраний період"""
     period = callback.data.split("_")[1]
     nickname = callback.from_user.username or "anonymous"
-    
+
     try:
         transactions = sheets_service.get_all_transactions(nickname)
-        
-        # 🔍 ДІАГНОСТИКА
         logger.info(f"📊 Period stats: {period} for {nickname}")
         logger.info(f"   Total transactions: {len(transactions)}")
-        
-        # Фільтруємо за періодом
+
         non_subscription = [t for t in transactions if not t.get('Is_Subscription')]
         period_transactions = filter_transactions_by_period(non_subscription, period)
-        
         logger.info(f"   Filtered transactions for '{period}': {len(period_transactions)}")
-        
-        # Показуємо перші 3
+
         for idx, t in enumerate(period_transactions[:3]):
             logger.info(f"   Transaction {idx+1}: {t.get('date')} - {t.get('amount')}")
-        
+
         if not period_transactions:
             await callback.answer("За цей період немає транзакцій", show_alert=True)
             return
-        
+
         balance, currency = sheets_service.get_current_balance(nickname)
         stats_text = format_statistics(period_transactions, currency)
-        
+        budget_summary = _build_budget_summary_text(nickname, transactions, currency)
+
         period_names = {
             'today': 'Сьогодні',
             'yesterday': 'Вчора',
@@ -119,25 +111,111 @@ async def show_period_statistics(callback: CallbackQuery):
             'month': 'За місяць',
             'year': 'За рік'
         }
-        
-        message_text = (
-            f"📊 <b>Статистика: {period_names.get(period, period)}</b>\n\n"
-            f"💰 Баланс: {format_currency(balance, currency)}\n\n"
-            f"{stats_text}"
+        period_label = period_names.get(period, period)
+        stats_block = f"🗓️ <b>{period_label}:</b>\n{stats_text}"
+
+        message_text = _compose_statistics_message(
+            title=f"📊 <b>Статистика: {period_label}</b>",
+            balance=balance,
+            currency=currency,
+            stats_block=stats_block,
+            budget_summary=budget_summary,
+            include_period_prompt=True,
         )
-        
+
         await callback.message.edit_text(
             message_text,
             reply_markup=get_stats_period_keyboard()
         )
         await callback.answer()
-        
+
     except Exception as e:
         logger.error(f"Error showing period statistics: {e}", exc_info=True)
         await callback.answer("❌ Помилка", show_alert=True)
 
 
-# ==================== ГРАФІКИ ====================
+
+
+def _compose_statistics_message(
+    title: str,
+    balance: float,
+    currency: str,
+    stats_block: str,
+    budget_summary: str = "",
+    include_period_prompt: bool = False,
+) -> str:
+    """Збирає секції статистики в одне повідомлення."""
+    sections = [
+        title.strip(),
+        f"💳 <b>Баланс:</b> {format_currency(balance, currency)}",
+        stats_block.strip(),
+    ]
+
+    if budget_summary:
+        sections.append(budget_summary.strip())
+    if include_period_prompt:
+        sections.append("Обери період для детальної статистики:")
+
+    return "\n\n".join(part for part in sections if part)
+
+
+def _build_budget_summary_text(nickname: str, transactions, currency: str) -> str:
+    """Формує текстовий прогрес бюджетів"""
+    try:
+        budgets = sheets_service.get_budget_status(nickname, transactions=transactions)
+    except Exception as exc:
+        logger.error("Error preparing budget summary: %s", exc, exc_info=True)
+        return ""
+
+    if not budgets:
+        return ""
+
+    sorted_budgets = sorted(
+        budgets,
+        key=lambda b: float(b.get('percentage') or 0),
+        reverse=True
+    )
+
+    lines = ["📊 <b>Бюджети:</b>"]
+    displayed = 0
+    for budget in sorted_budgets:
+        category = budget.get('category', 'Без назви')
+        limit_amount = float(budget.get('limit', budget.get('budget_amount', 0)) or 0)
+        if limit_amount <= 0:
+            continue
+
+        spent = float(budget.get('calculated_spent', budget.get('current_spent', 0)) or 0)
+        percentage = float(budget.get('percentage') or 0)
+        if not percentage and spent and limit_amount:
+            percentage = spent / limit_amount * 100
+
+        if percentage < 70:
+            status = "✅"
+        elif percentage < 90:
+            status = "⚠️"
+        else:
+            status = "🔴"
+
+        lines.append(
+            f"{status} {category}: "
+            f"{format_currency(spent, currency)} / {format_currency(limit_amount, currency)} "
+            f"({percentage:.0f}%)"
+        )
+
+        displayed += 1
+        if displayed >= 5:
+            break
+
+    if displayed == 0:
+        return ""
+
+    remaining = len(sorted_budgets) - displayed
+    if remaining > 0:
+        lines.append(f"… та ще {remaining} бюджет(и)")
+
+    lines.append("Керуй бюджетами в меню «Категорії → Бюджети».")
+    return "\n".join(lines)
+
 
 @router.callback_query(F.data == "show_charts")
 async def show_charts_menu(callback: CallbackQuery):

@@ -40,6 +40,15 @@ class SubscriptionState(StatesGroup):
     edit_date = State()
 
 
+
+
+class BudgetState(StatesGroup):
+    """States for budgets"""
+    set_category = State()
+    set_amount = State()
+    edit_select = State()
+    edit_amount = State()
+
 class AnalyticsState(StatesGroup):
     """Стани для аналітики"""
     select_chart_type = State()
