@@ -26,7 +26,8 @@ class SheetsService:
     TRANSACTION_COLUMNS = [
         'date', 'user_id', 'amount', 'category', 'note',
         'nickname', 'balance', 'currency', 'Is_Subscription',
-        'subscription_name', 'subscription_due_date'
+        'subscription_name', 'subscription_due_date',
+        'subscription_original_amount', 'subscription_original_currency'
     ]
     GOAL_COLUMNS = [
         'goal_name', 'target_amount', 'current_amount',
@@ -253,6 +254,8 @@ class SheetsService:
         is_subscription: bool = False,
         subscription_name: Optional[str] = None,
         subscription_due_date: Optional[str] = None,
+        subscription_original_amount: Optional[float] = None,
+        subscription_original_currency: Optional[str] = None,
         legacy_titles: Optional[List[str]] = None,
         user_display_name: Optional[str] = None
     ) -> int:
@@ -276,7 +279,9 @@ class SheetsService:
             'currency': currency,
             'Is_Subscription': is_subscription,
             'subscription_name': subscription_name or "",
-            'subscription_due_date': subscription_due_date or ""
+            'subscription_due_date': subscription_due_date or "",
+            'subscription_original_amount': subscription_original_amount or "",
+            'subscription_original_currency': subscription_original_currency or ""
         })
         ws.append_row(row)
         

@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 SUBSCRIPTION_NOTE_PREFIX = "Підписка: "
 CANCEL_COMMANDS = {"0", "відміна", "скасувати", "cancel", "стоп"}
+ORIGINAL_SKIP_VALUES = {"0", "-", "skip", "пропустити", "none"}
 
 
 # ----------------------- ДОПОМІЖНІ ФУНКЦІЇ ----------------------- #
@@ -42,17 +43,83 @@ def _subscription_currency(sub: Dict) -> str:
     return sub.get("currency") or "UAH"
 
 
+def _original_amount_display(sub: Dict) -> str:
+    raw_amount = sub.get("subscription_original_amount")
+    raw_currency = (sub.get("subscription_original_currency") or "").strip()
+    if not raw_amount or not raw_currency:
+        return ""
+    try:
+        value = abs(float(raw_amount))
+    except (TypeError, ValueError):
+        return ""
+    if not raw_currency.isalpha():
+        return ""
+    return format_currency(value, raw_currency.upper())
+
+
+def _parse_original_amount_input(text: str):
+    normalized = (text or "").strip()
+    if not normalized or normalized.lower() in ORIGINAL_SKIP_VALUES:
+        return "skip", None, None, None
+
+    normalized = normalized.replace(",", ".")
+    tokens = normalized.split()
+    if len(tokens) < 2:
+        return "error", None, None, "🔁 Формат: <code>9.99 USD</code> (або 0, щоб пропустити)."
+
+    token_a, token_b = tokens[0], tokens[1]
+
+    def is_currency(token: str) -> bool:
+        return token.isalpha() and len(token) == 3
+
+    def parse_amount_token(token: str):
+        is_valid, amount, error = validate_amount(token)
+        return is_valid, amount, error
+
+    # try amount first
+    is_amount, amount_value, amount_error = parse_amount_token(token_a)
+    if is_amount and is_currency(token_b.upper()):
+        return "ok", abs(amount_value), token_b.upper(), None
+
+    # try reversed order
+    if is_currency(token_a.upper()):
+        is_amount, amount_value, amount_error = parse_amount_token(token_b)
+        if not is_amount:
+            return "error", None, None, amount_error
+        return "ok", abs(amount_value), token_a.upper(), None
+
+    if not is_amount:
+        return "error", None, None, amount_error
+
+    return "error", None, None, "🔁 Вкажи трилітерну валюту (USD, EUR, ... ) після суми."
+
+
+def _format_original_state_value(amount: Optional[Any], currency: Optional[str]) -> str:
+    if amount in (None, "", 0) or not currency:
+        return "не вказано"
+    try:
+        value = abs(float(amount))
+    except (TypeError, ValueError):
+        return "не вказано"
+    return format_currency(value, currency)
+
+
 def _build_subscription_summary(sub: Dict) -> str:
     amount = abs(float(sub.get("amount", 0) or 0))
     currency = _subscription_currency(sub)
     category = sub.get("category", "Інше")
     due_raw = sub.get("subscription_due_date") or sub.get("date")
     due_date = format_date(due_raw) if due_raw else "Не вказано"
+    original_line = ""
+    original_display = _original_amount_display(sub)
+    if original_display:
+        original_line = f"\n🌍 Оригінал: <b>{original_display}</b>"
     return (
         f"📝 Назва: <b>{_subscription_name(sub)}</b>\n"
         f"💰 Сума: <b>{format_currency(amount, currency)}</b>\n"
         f"📂 Категорія: <b>{category}</b>\n"
         f"📅 Дата списання: <b>{due_date}</b>"
+        f"{original_line}"
     )
 
 
@@ -62,6 +129,7 @@ def _edit_keyboard() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="✏️ Назва", callback_data="edit_sub_field:name"),
                 InlineKeyboardButton(text="💰 Сума", callback_data="edit_sub_field:amount"),
+                InlineKeyboardButton(text="💱 Оригінал", callback_data="edit_sub_field:original"),
             ],
             [
                 InlineKeyboardButton(text="📂 Категорія", callback_data="edit_sub_field:category"),
@@ -83,9 +151,12 @@ def _build_list_text(subscriptions: List[Dict]) -> str:
         currency = _subscription_currency(sub)
         due_raw = sub.get("subscription_due_date") or sub.get("date")
         due = format_date(due_raw) if due_raw else "Не вказано"
+        original_display = _original_amount_display(sub)
+        original_line = f"\n   🌍 {original_display}" if original_display else ""
         lines.append(
             f"\n{idx}. { _subscription_name(sub) }\n"
             f"   💰 {format_currency(amount, currency)} | 📅 {due}"
+            f"{original_line}"
         )
     lines.append("\nНадішліть номер або 0 для скасування.")
     return "\n".join(lines)
@@ -109,7 +180,7 @@ async def add_subscription_start(callback: CallbackQuery, state: FSMContext):
     await callback.message.delete()
     msg = await callback.message.answer(
         "🆕 <b>Додавання підписки</b>\n\n"
-        "Крок 1/4: введіть назву підписки\n"
+        "Крок 1/5: введіть назву підписки\n"
         "Наприклад: <code>Netflix</code>"
     )
     await state.update_data(last_bot_message_id=msg.message_id)
@@ -132,7 +203,7 @@ async def process_subscription_name(message: Message, state: FSMContext):
             text=(
                 f"🆕 <b>Додавання підписки</b>\n\n"
                 f"Назва: <b>{name}</b>\n\n"
-                "Крок 2/4: введіть суму платежу\n"
+                "Крок 2/5: введіть суму платежу\n"
                 "Наприклад: <code>199</code>"
             ),
         )
@@ -157,7 +228,45 @@ async def process_subscription_amount(message: Message, state: FSMContext):
                 "🆕 <b>Додавання підписки</b>\n\n"
                 f"Назва: <b>{data.get('name')}</b>\n"
                 f"Сума: <b>{format_currency(amount)}</b>\n\n"
-                "Крок 3/4: введіть категорію\n"
+                "Крок 3/5: введіть оригінальну суму та валюту\n"
+                "Наприклад: <code>9.99 USD</code> або 0, якщо вже у гривнях"
+            ),
+        )
+    except Exception:
+        pass
+    await state.set_state(SubscriptionState.add_original_amount)
+
+
+@router.message(SubscriptionState.add_original_amount)
+async def process_subscription_original_amount(message: Message, state: FSMContext):
+    status, original_amount, original_currency, error = _parse_original_amount_input(message.text)
+    if status == "error":
+        await message.reply(f"❌ {error}")
+        return
+
+    if status == "skip":
+        await state.update_data(subscription_original_amount=None, subscription_original_currency=None)
+    else:
+        await state.update_data(
+            subscription_original_amount=original_amount,
+            subscription_original_currency=original_currency,
+        )
+
+    data = await state.get_data()
+    original_display = _format_original_state_value(
+        data.get("subscription_original_amount"),
+        data.get("subscription_original_currency"),
+    )
+    try:
+        await message.bot.edit_message_text(
+            chat_id=message.chat.id,
+            message_id=data.get("last_bot_message_id"),
+            text=(
+                "\U0001f195 <b>Додавання підписки</b>\n\n"
+                f"Назва: <b>{data.get('name')}</b>\n"
+                f"Сума: <b>{format_currency(data.get('amount'))}</b>\n"
+                f"Оригінал: <b>{original_display}</b>\n\n"
+                "Крок 4/5: введіть категорію\n"
                 "Наприклад: <code>Розваги</code>"
             ),
         )
@@ -174,6 +283,10 @@ async def process_subscription_category(message: Message, state: FSMContext):
         return
     await state.update_data(category=category)
     data = await state.get_data()
+    original_display = _format_original_state_value(
+        data.get("subscription_original_amount"),
+        data.get("subscription_original_currency"),
+    )
     try:
         await message.bot.edit_message_text(
             chat_id=message.chat.id,
@@ -182,8 +295,9 @@ async def process_subscription_category(message: Message, state: FSMContext):
                 "🆕 <b>Додавання підписки</b>\n\n"
                 f"Назва: <b>{data.get('name')}</b>\n"
                 f"Сума: <b>{format_currency(data.get('amount'))}</b>\n"
+                f"Оригінал: <b>{original_display}</b>\n"
                 f"Категорія: <b>{category}</b>\n\n"
-                "Крок 4/4: введіть дату наступного списання (ДД.ММ.РРРР)"
+                "Крок 5/5: введіть дату наступного списання (ДД.ММ.РРРР)"
             ),
         )
     except Exception:
@@ -205,6 +319,8 @@ async def process_subscription_date(message: Message, state: FSMContext):
     ctx = build_sheet_context(message.from_user)
     formatted_date = date_obj.strftime("%d.%m.%Y")
     await state.update_data(subscription_date=formatted_date)
+    original_amount = data.get("subscription_original_amount")
+    original_currency = data.get("subscription_original_currency")
 
     try:
         sheets_service.append_transaction(
@@ -216,6 +332,8 @@ async def process_subscription_date(message: Message, state: FSMContext):
             is_subscription=True,
             subscription_name=data.get("name"),
             subscription_due_date=formatted_date,
+            subscription_original_amount=original_amount,
+            subscription_original_currency=original_currency,
             legacy_titles=ctx.legacy_titles,
             user_display_name=ctx.display_name,
         )
@@ -226,6 +344,8 @@ async def process_subscription_date(message: Message, state: FSMContext):
                 "currency": "UAH",
                 "category": data.get("category"),
                 "subscription_due_date": formatted_date,
+                "subscription_original_amount": original_amount,
+                "subscription_original_currency": original_currency,
             })
         )
         await message.answer("Обирай наступну дію:", reply_markup=get_main_menu_keyboard())
@@ -264,11 +384,14 @@ async def view_subscriptions(callback: CallbackQuery):
         category = sub.get("category", "Інше")
         due_raw = sub.get("subscription_due_date") or sub.get("date")
         due_date = format_date(due_raw) if due_raw else "Не вказано"
+        original_display = _original_amount_display(sub)
+        original_line = f"\n   🌍 Оригінал: {original_display}" if original_display else ""
         totals[currency] = totals.get(currency, 0) + amount
         lines.append(
             f"\n{idx}. <b>{_subscription_name(sub)}</b>\n"
             f"   💰 {format_currency(amount, currency)} | 📂 {category}\n"
             f"   📅 Наступне списання: {due_date}"
+            f"{original_line}"
         )
 
     if totals:
@@ -389,12 +512,14 @@ async def handle_edit_action(callback: CallbackQuery, state: FSMContext):
     prompts = {
         "name": "Введи нову назву або 0 для скасування.",
         "amount": "Введи нову суму (лише число). 0 для скасування.",
+        "original": "Введи оригінальну суму та валюту (наприклад 9.99 USD). 0 — щоб очистити.",
         "category": "Введи нову категорію. 0 — скасувати.",
         "date": "Введи нову дату у форматі ДД.ММ.РРРР або 0 для скасування.",
     }
     state_map = {
         "name": SubscriptionState.edit_name,
         "amount": SubscriptionState.edit_amount,
+        "original": SubscriptionState.edit_original_amount,
         "category": SubscriptionState.edit_category,
         "date": SubscriptionState.edit_date,
     }
@@ -484,6 +609,42 @@ async def edit_subscription_amount(message: Message, state: FSMContext):
     if updated:
         await state.set_state(SubscriptionState.select_to_edit)
         await message.answer("Суму оновлено.\n\n" + _build_subscription_summary(updated), reply_markup=_edit_keyboard())
+
+
+@router.message(SubscriptionState.edit_original_amount)
+async def edit_subscription_original_amount(message: Message, state: FSMContext):
+    text = message.text.strip()
+    if text.lower() in CANCEL_COMMANDS:
+        await state.set_state(SubscriptionState.select_to_edit)
+        await message.answer("Зміну оригінальної суми скасовано.")
+        return
+
+    status, original_amount, original_currency, error = _parse_original_amount_input(text)
+    if status == "error":
+        await message.reply(f"❌ {error}")
+        return
+
+    if status == "skip":
+        updates = {
+            'subscription_original_amount': "",
+            'subscription_original_currency': "",
+        }
+        info = "Оригінальну суму очищено."
+    else:
+        updates = {
+            'subscription_original_amount': original_amount,
+            'subscription_original_currency': original_currency,
+        }
+        info = f"Оригінальну суму оновлено на {format_currency(original_amount, original_currency)}."
+
+    updated = await _apply_subscription_updates(
+        state,
+        updates,
+        recalc=False,
+    )
+    if updated:
+        await state.set_state(SubscriptionState.select_to_edit)
+        await message.answer(f"{info}\n\n" + _build_subscription_summary(updated), reply_markup=_edit_keyboard())
 
 
 @router.message(SubscriptionState.edit_category)

@@ -29,11 +29,13 @@ class SubscriptionState(StatesGroup):
     """Стани для роботи з підписками"""
     add_name = State()
     add_amount = State()
+    add_original_amount = State()
     add_category = State()
     add_date = State()
     select_to_edit = State()
     edit_name = State()
     edit_amount = State()
+    edit_original_amount = State()
     edit_category = State()
     edit_date = State()
 

@@ -12,6 +12,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.config.settings import config
+from app.services.exchange_service import exchange_service
 from app.services.sheets_service import sheets_service
 from app.utils.formatters import format_currency
 
@@ -56,6 +57,24 @@ def _subscription_name(sub: dict) -> str:
     if note.startswith(SUBSCRIPTION_NOTE_PREFIX):
         return note[len(SUBSCRIPTION_NOTE_PREFIX):].strip() or "Без назви"
     return note or "Без назви"
+
+
+def _original_amount_info(sub: dict) -> tuple[Optional[float], Optional[str]]:
+    raw_amount = sub.get("subscription_original_amount")
+    raw_currency = (sub.get("subscription_original_currency") or "").strip().upper()
+    try:
+        amount = abs(float(raw_amount))
+    except (TypeError, ValueError):
+        amount = None
+    if not raw_currency:
+        raw_currency = None
+    return amount, raw_currency
+
+
+def _format_original_message(amount: Optional[float], currency: Optional[str]) -> str:
+    if not amount or not currency:
+        return ""
+    return f"{amount:.2f} {currency}"
 
 
 # ----------------------- Нагадування ----------------------- #
@@ -111,6 +130,27 @@ async def check_subscription_renewals(bot: Bot):
 
                     name = _subscription_name(sub)
                     amount = abs(float(sub.get("amount", 0) or 0))
+                    charge_amount = amount
+                    original_amount, original_currency = _original_amount_info(sub)
+                    original_line = _format_original_message(original_amount, original_currency)
+                    if original_amount and original_currency:
+                        try:
+                            converted = await exchange_service.convert_to_uah(
+                                original_amount, original_currency
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Не вдалося оновити курс %s для %s: %s",
+                                original_currency,
+                                sheet_title,
+                                exc,
+                            )
+                        else:
+                            if converted:
+                                charge_amount = converted
+                                original_line = _format_original_message(
+                                    original_amount, original_currency
+                                )
                     category = sub.get("category", "Підписки")
                     row_index = sub.get("_row")
                     user_id_raw = sub.get("user_id")
@@ -121,11 +161,12 @@ async def check_subscription_renewals(bot: Bot):
 
                     if due_date == today and user_id:
                         # створюємо витрату
+                        charge_value = -abs(charge_amount)
                         try:
                             sheets_service.append_transaction(
                                 user_id=user_id,
                                 nickname=sheet_title,
-                                amount=-amount,
+                                amount=charge_value,
                                 category=category,
                                 note=f"{SUBSCRIPTION_NOTE_PREFIX}{name} (авто)",
                                 is_subscription=False,
@@ -138,15 +179,19 @@ async def check_subscription_renewals(bot: Bot):
                             sheets_service.update_transaction_fields(
                                 sheet_title,
                                 row_index,
-                                {'subscription_due_date': next_due.strftime("%d.%m.%Y")},
+                                {
+                                    'subscription_due_date': next_due.strftime("%d.%m.%Y"),
+                                    'amount': charge_value,
+                                },
                                 legacy_titles=[sheet_title],
                             )
                             await bot.send_message(
                                 chat_id=user_id,
                                 text=(
                                     "🤖 <b>Автосписання виконано</b>\n\n"
-                                    f"{name}: {format_currency(amount)}\n"
+                                    f"{name}: {format_currency(charge_amount)}\n"
                                     f"Наступна дата: {next_due.strftime('%d.%m.%Y')}"
+                                    + (f"\nБазова сума: {original_line}" if original_line else "")
                                 ),
                             )
                         except Exception as exc:
