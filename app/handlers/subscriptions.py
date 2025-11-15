@@ -9,6 +9,7 @@ from typing import List, Dict, Optional, Any
 from aiogram import Router, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.exceptions import TelegramBadRequest
 
 from app.core.states import SubscriptionState
 from app.services.sheets_service import sheets_service
@@ -276,7 +277,12 @@ async def view_subscriptions(callback: CallbackQuery):
             lines.append(f"   • {format_currency(total, currency)}")
 
     chunks = split_long_message("\n".join(lines))
-    await callback.message.edit_text(chunks[0], reply_markup=get_subscriptions_menu())
+    try:
+        await callback.message.edit_text(chunks[0], reply_markup=get_subscriptions_menu())
+    except TelegramBadRequest as exc:
+        logger.info("Skipping edit: %s", exc)
+        await callback.answer()
+        return
     for chunk in chunks[1:]:
         await callback.message.answer(chunk)
     await callback.answer()
